@@ -1,0 +1,91 @@
+/**
+ * # SubFlow Dashboard Security Rules
+ *
+ * ## Core Philosophy
+ * This ruleset implements a strict **User-Ownership Model** designed for high security and 
+ * rapid prototyping. Access is governed by the authenticated user's identity, ensuring 
+ * that users can only interact with data they own or created.
+ *
+ * ## Data Structure
+ * The database follows a hierarchical, user-centric structure:
+ * - `/users/{userId}`: Root profile document for each user.
+ * - `/users/{userId}/payments/{paymentId}`: Financial transaction records nested under the owner.
+ *
+ * ## Key Security Decisions
+ * - **Authorization Independence**: Security logic relies on the document path (`{userId}`) 
+ *   and denormalized fields (like `userId` or `id`) within the documents. This allows 
+ *   rules to execute instantly without expensive `get()` lookups.
+ * - **Path-to-Data Consistency**: During creation, the rules enforce that internal ID fields 
+ *   match the Firestore path. During updates, these relational fields are made immutable.
+ * - **No Public Discovery**: Listing the root `/users` collection is strictly prohibited 
+ *   to prevent user enumeration. Users may only list their own data.
+ * - **Prototyping Flexibility**: While authorization is strictly enforced (Who can access), 
+ *   the schema of the data (What is inside) remains flexible to allow for rapid iteration 
+ *   without frequent rules updates.
+ *
+ * ## Denormalization for Authorization
+ * To maintain performance and follow the principle of "Query-As-Permissions":
+ * - The `UserProfile` contains an `id` field that must match the document UID.
+ * - The `Payment` document contains a `userId` field that must match the parent path UID.
+ */
+
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // --- GLOBAL HELPER FUNCTIONS ---
+
+    /** @description Checks if the request is made by an authenticated user. */
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    /** @description Checks if the provided UID matches the authenticated user's UID. */
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    /** @description Combines ownership check with existence check for updates and deletes. */
+    function isExistingOwner(userId) {
+      return resource != null && isOwner(userId);
+    }
+
+    // --- COLLECTION RULES ---
+
+    /**
+     * @description Rules for the UserProfile entity. Allows users to manage their own profile.
+     * @path /users/{userId}
+     * @allow (create) If auth.uid matches {userId} and data.id matches {userId}.
+     * @deny (list) If attempting to list all users in the system.
+     * @principle Enforces document ownership and relational integrity via path matching.
+     */
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow list: if isOwner(userId);
+      allow create: if isOwner(userId) && request.resource.data.id == userId;
+      allow update: if isExistingOwner(userId) && request.resource.data.id == resource.data.id;
+      allow delete: if isExistingOwner(userId);
+
+      /**
+       * @description Rules for Payment records. Nested under the user for automatic scoping.
+       * @path /users/{userId}/payments/{paymentId}
+       * @allow (list) If auth.uid matches the parent {userId}.
+       * @deny (create) If the internal userId field does not match the parent path.
+       * @principle Uses subcollection nesting to isolate user data and simplify list queries.
+       */
+      match /payments/{paymentId} {
+        allow get: if isOwner(userId);
+        allow list: if isOwner(userId);
+        allow create: if isOwner(userId) && request.resource.data.userId == userId;
+        allow update: if isExistingOwner(userId) && request.resource.data.userId == resource.data.userId;
+        allow delete: if isExistingOwner(userId);
+      }
+    }
+
+    // --- GLOBAL DENY-ALL DEFAULT ---
+    // Explicitly deny any access to paths not defined above.
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}

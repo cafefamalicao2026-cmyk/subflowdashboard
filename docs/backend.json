@@ -1,0 +1,154 @@
+{
+  "entities": {
+    "UserProfile": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "UserProfile",
+      "type": "object",
+      "description": "Represents a user's profile information and subscription details within the SubFlow Dashboard application. This entity stores application-specific data associated with a user, complementing the external Firebase Authentication system.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the UserProfile entity. This ID should correspond to the user's ID from the Firebase Authentication system."
+        },
+        "name": {
+          "type": "string",
+          "description": "The full name of the user as displayed in the application (e.g., 'Hebert Alves')."
+        },
+        "email": {
+          "type": "string",
+          "description": "The user's email address, primarily used for display and linking to their Firebase authentication account.",
+          "format": "email"
+        },
+        "avatarUrl": {
+          "type": "string",
+          "description": "URL to the user's profile picture or avatar. If not provided, a default or initial-based avatar can be generated.",
+          "format": "uri"
+        },
+        "subscriptionStatus": {
+          "type": "string",
+          "description": "The current status of the user's subscription (e.g., 'Cancelado', 'Ativo', 'Pendente'). Defaults to 'Cancelado' upon user creation as per requirements."
+        },
+        "nextBillingDate": {
+          "type": "string",
+          "description": "The anticipated date and time of the user's next subscription billing cycle. If 'Indisponível', this field may be omitted or explicitly null.",
+          "format": "date-time"
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Timestamp indicating when this user profile record was created.",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Timestamp indicating when this user profile record was last updated.",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "email",
+        "subscriptionStatus",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Payment": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "title": "Payment",
+      "type": "object",
+      "description": "Records a financial transaction or payment made by a user for their subscription or other services within the SubFlow Dashboard application.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique identifier for the Payment entity."
+        },
+        "userId": {
+          "type": "string",
+          "description": "Reference to the UserProfile entity associated with this payment. (Relationship: UserProfile 1:N Payment)"
+        },
+        "amount": {
+          "type": "number",
+          "description": "The total monetary amount of the payment."
+        },
+        "currency": {
+          "type": "string",
+          "description": "The currency of the payment (e.g., 'BRL', 'USD')."
+        },
+        "paymentDate": {
+          "type": "string",
+          "description": "The date and time when the payment was successfully processed or attempted.",
+          "format": "date-time"
+        },
+        "status": {
+          "type": "string",
+          "description": "The current status of the payment (e.g., 'Aprovado', 'Pendente', 'Falha', 'Reembolsado')."
+        },
+        "description": {
+          "type": "string",
+          "description": "A brief description of the payment purpose (e.g., 'Assinatura Mensal - Plano Pro', 'Ativação de Plano')."
+        },
+        "transactionId": {
+          "type": "string",
+          "description": "An optional identifier for the transaction provided by an external payment gateway."
+        }
+      },
+      "required": [
+        "id",
+        "userId",
+        "amount",
+        "currency",
+        "paymentDate",
+        "status",
+        "description"
+      ]
+    }
+  },
+  "auth": {
+    "providers": [
+      "password",
+      "anonymous"
+    ]
+  },
+  "firestore": {
+    "structure": [
+      {
+        "path": "/users/{userId}",
+        "definition": {
+          "entityName": "UserProfile",
+          "schema": {
+            "$ref": "#/backend/entities/UserProfile"
+          },
+          "description": "Stores individual user profile information. The document ID (`{userId}`) must correspond to the user's Firebase Authentication UID. Access is restricted to the authenticated user owning the profile. This structure ensures Authorization Independence as the owner's UID is part of the path.",
+          "params": [
+            {
+              "name": "userId",
+              "description": "The unique identifier of the user, which is also their Firebase Authentication UID."
+            }
+          ]
+        }
+      },
+      {
+        "path": "/users/{userId}/payments/{paymentId}",
+        "definition": {
+          "entityName": "Payment",
+          "schema": {
+            "$ref": "#/backend/entities/Payment"
+          },
+          "description": "Stores individual payment records associated with a specific user profile. The `userId` field within the document is denormalized from the parent path for explicit ownership and easier querying. Access is restricted to the authenticated user owning the parent profile. This achieves Authorization Independence as the ownership is established by the path and denormalized `userId` field.",
+          "params": [
+            {
+              "name": "userId",
+              "description": "The unique identifier of the user, corresponding to the parent UserProfile's ID and the Firebase Authentication UID."
+            },
+            {
+              "name": "paymentId",
+              "description": "The unique identifier for the specific payment record."
+            }
+          ]
+        }
+      }
+    ],
+    "reasoning": "The recommended Firestore structure is designed to be highly secure, scalable, and debuggable, adhering strictly to the provided design principles. The core of the structure revolves around the `/users/{userId}` collection for `UserProfile` documents, with a nested subcollection `/users/{userId}/payments/{paymentId}` for `Payment` records. This design strategically denormalizes authorization context to achieve Authorization Independence and supports Query-As-Permissions (QAPs).\n\n**Authorization Independence:**\n1.  **UserProfile:** Each `UserProfile` document's ID will be the user's Firebase Authentication UID. This allows security rules to directly compare `request.auth.uid` with the `{userId}` wildcard in the path (`/users/{userId}`) without needing any `get()` operations. The ownership is inherently established by the document's location and ID.\n2.  **Payment:** `Payment` documents are stored in a subcollection under the specific user's profile: `/users/{userId}/payments/{paymentId}`. The `userId` field within the `Payment` document acts as a denormalized authorization attribute. While the path itself (`{userId}` wildcard matching `request.auth.uid`) provides primary authorization context, having `userId` within the document allows for robust, independent checks and easier querying without traversing up the hierarchy. This completely eliminates the need for `get()` calls in security rules for `Payment` documents, as their authorization is self-contained or derivable from the immediate path.\n\n**Query-As-Permissions (QAPs):**\n1.  **UserProfile:** Users can only read or write their own profile by specifying their unique `userId` (which is their `auth.uid`) in the document path (e.g., `db.collection('users').doc(auth.currentUser.uid)`). Any attempt to `list` the entire `/users` collection would be denied by security rules for regular users, enforcing that queries are not filters.\n2.  **Payment:** By nesting payments under a user's profile (`/users/{userId}/payments/{paymentId}`), a user can only query their own payments (e.g., `db.collection('users').doc(auth.currentUser.uid).collection('payments').get()`). Security rules will ensure that the `{userId}` in the path matches `request.auth.uid`, thereby automatically enforcing ownership and allowing efficient `list` operations that return only authorized data, rather than requiring client-side filtering.\n\nThis structure ensures that each document or subcollection has a homogeneous security posture, simplifying security rules and enhancing maintainability and debuggability. The use of clear, descriptive paths and consistent field naming (like `userId`) further reinforces data clarity and predictability."
+  }
+}
