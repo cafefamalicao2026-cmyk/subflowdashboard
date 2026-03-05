@@ -51,21 +51,27 @@ export default function DashboardPage() {
         body: JSON.stringify({
           uid: user.uid,
           email: user.email,
-          priceId: process.env.NEXT_PUBLIC_STRIPE_PRICE_MONTHLY || "STRIPE_PRICE_MONTHLY", // Fallback for dev
+          plan: "monthly", // Passamos o identificador do plano agora
         }),
       });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || "Failed to create checkout session");
+      }
 
       const data = await response.json();
       if (data.url) {
         window.location.href = data.url;
       } else {
-        throw new Error("Failed to create checkout session");
+        throw new Error("URL de checkout não retornada");
       }
     } catch (error: any) {
+      console.error("Checkout handle error:", error);
       toast({
         variant: "destructive",
         title: "Erro no checkout",
-        description: "Não foi possível iniciar o pagamento. Tente novamente.",
+        description: error.message || "Não foi possível iniciar o pagamento. Verifique se as chaves do Stripe estão configuradas.",
       });
     } finally {
       setCheckoutLoading(false);
