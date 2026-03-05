@@ -1,20 +1,33 @@
 "use client";
 
 import React from "react";
-import { useAuth } from "@/context/auth-context";
+import { useUser, useAuth } from "@/firebase";
+import { signOut as firebaseSignOut } from "firebase/auth";
 import { LogOut, User, HelpCircle, Edit3, ChevronRight, CreditCard, AlertCircle } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
+import { useRouter } from "next/navigation";
 
 export default function DashboardPage() {
-  const { user, signOut } = useAuth();
+  const { user } = useUser();
+  const auth = useAuth();
+  const router = useRouter();
   
   // Mock data as requested in requirements
-  const userName = "Hebert Alves";
+  const userName = user?.displayName || "Hebert Alves";
   const userEmail = user?.email || "hebert.alves@subflow.pro";
+
+  const handleSignOut = async () => {
+    try {
+      await firebaseSignOut(auth);
+      router.push("/login");
+    } catch (error) {
+      console.error("Error signing out:", error);
+    }
+  };
 
   return (
     <div className="min-h-screen pb-12">
@@ -32,7 +45,7 @@ export default function DashboardPage() {
             <span className="text-sm font-medium text-muted-foreground hidden sm:inline">
               Olá, <span className="text-foreground">{userName}</span>
             </span>
-            <Button variant="ghost" size="icon" onClick={signOut} className="text-muted-foreground hover:text-destructive">
+            <Button variant="ghost" size="icon" onClick={handleSignOut} className="text-muted-foreground hover:text-destructive">
               <LogOut className="h-5 w-5" />
             </Button>
           </div>
@@ -113,7 +126,9 @@ export default function DashboardPage() {
               <CardContent className="space-y-6">
                 <div className="flex flex-col items-center text-center p-4">
                   <Avatar className="h-20 w-20 border-4 border-primary/10 mb-4">
-                    <AvatarFallback className="text-2xl font-bold bg-primary text-white">H</AvatarFallback>
+                    <AvatarFallback className="text-2xl font-bold bg-primary text-white">
+                      {userName.charAt(0)}
+                    </AvatarFallback>
                   </Avatar>
                   <div className="space-y-1">
                     <h4 className="font-bold text-lg text-foreground">{userName}</h4>
