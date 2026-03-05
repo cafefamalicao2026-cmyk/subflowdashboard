@@ -1,15 +1,16 @@
 "use client";
 
 import React, { useState } from "react";
-import { signInWithEmailAndPassword } from "firebase/auth";
-import { auth } from "@/lib/firebase";
+import { signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile } from "firebase/auth";
+import { doc, setDoc, serverTimestamp } from "firebase/firestore";
+import { useAuth as useFirebaseAuth, useFirestore } from "@/firebase";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { LogIn, Send } from "lucide-react";
+import { LogIn, UserPlus } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -19,15 +20,23 @@ import {
   DialogTrigger,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { Textarea } from "@/components/ui/textarea";
+import { errorEmitter } from '@/firebase/error-emitter';
+import { FirestorePermissionError } from '@/firebase/errors';
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
-  const [requestLoading, setRequestLoading] = useState(false);
-  const [requestOpen, setRequestOpen] = useState(false);
   
+  // Sign up states
+  const [signUpOpen, setSignUpOpen] = useState(false);
+  const [signUpName, setSignUpName] = useState("");
+  const [signUpEmail, setSignUpEmail] = useState("");
+  const [signUpPassword, setSignUpPassword] = useState("");
+  const [signUpLoading, setSignUpLoading] = useState(false);
+  
+  const auth = useFirebaseAuth();
+  const db = useFirestore();
   const router = useRouter();
   const { toast } = useToast();
 
@@ -48,19 +57,56 @@ export default function LoginPage() {
     }
   };
 
-  const handleRequestAccess = async (e: React.FormEvent) => {
+  const handleSignUp = async (e: React.FormEvent) => {
     e.preventDefault();
-    setRequestLoading(true);
+    setSignUpLoading(true);
     
-    // Simulação de envio de solicitação
-    setTimeout(() => {
-      setRequestLoading(false);
-      setRequestOpen(false);
+    try {
+      // 1. Create user in Firebase Auth
+      const userCredential = await createUserWithEmailAndPassword(auth, signUpEmail, signUpPassword);
+      const user = userCredential.user;
+
+      // 2. Update display name in Auth
+      await updateProfile(user, { displayName: signUpName });
+
+      // 3. Create UserProfile in Firestore
+      const userProfileData = {
+        id: user.uid,
+        name: signUpName,
+        email: signUpEmail,
+        subscriptionStatus: "Cancelado",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      const userRef = doc(db, "users", user.uid);
+      
+      // Inicia a gravação no Firestore (sem travar a UI conforme diretrizes)
+      setDoc(userRef, userProfileData)
+        .catch(async (error) => {
+          errorEmitter.emit('permission-error', new FirestorePermissionError({
+            path: userRef.path,
+            operation: 'create',
+            requestResourceData: userProfileData
+          }));
+        });
+
       toast({
-        title: "Solicitação enviada!",
-        description: "Nossa equipe analisará seu pedido e entrará em contato em breve.",
+        title: "Conta criada!",
+        description: "Seu perfil foi configurado com sucesso.",
       });
-    }, 1500);
+      
+      setSignUpOpen(false);
+      router.push("/dashboard");
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Erro no cadastro",
+        description: error.message || "Não foi possível criar sua conta.",
+      });
+    } finally {
+      setSignUpLoading(false);
+    }
   };
 
   return (
@@ -109,45 +155,61 @@ export default function LoginPage() {
 
           <div className="mt-6 text-center text-sm text-muted-foreground">
             Ainda não tem uma conta?{" "}
-            <Dialog open={requestOpen} onOpenChange={setRequestOpen}>
+            <Dialog open={signUpOpen} onOpenChange={setSignUpOpen}>
               <DialogTrigger asChild>
                 <span className="text-primary font-medium cursor-pointer hover:underline transition-all">
-                  Solicite acesso
+                  Cadastre-se agora
                 </span>
               </DialogTrigger>
               <DialogContent className="sm:max-w-[425px]">
-                <form onSubmit={handleRequestAccess}>
+                <form onSubmit={handleSignUp}>
                   <DialogHeader>
-                    <DialogTitle>Solicitar Acesso</DialogTitle>
+                    <DialogTitle>Criar Nova Conta</DialogTitle>
                     <DialogDescription>
-                      Preencha os dados abaixo e entraremos em contato para validar seu perfil Pro.
+                      Preencha seus dados para começar a gerenciar suas assinaturas.
                     </DialogDescription>
                   </DialogHeader>
                   <div className="grid gap-4 py-4">
                     <div className="grid gap-2">
-                      <Label htmlFor="req-name">Nome Completo</Label>
-                      <Input id="req-name" placeholder="Seu nome" required />
+                      <Label htmlFor="signup-name">Nome Completo</Label>
+                      <Input 
+                        id="signup-name" 
+                        placeholder="Seu nome" 
+                        required 
+                        value={signUpName}
+                        onChange={(e) => setSignUpName(e.target.value)}
+                      />
                     </div>
                     <div className="grid gap-2">
-                      <Label htmlFor="req-email">E-mail Corporativo</Label>
-                      <Input id="req-email" type="email" placeholder="nome@empresa.com" required />
+                      <Label htmlFor="signup-email">E-mail</Label>
+                      <Input 
+                        id="signup-email" 
+                        type="email" 
+                        placeholder="nome@exemplo.com" 
+                        required 
+                        value={signUpEmail}
+                        onChange={(e) => setSignUpEmail(e.target.value)}
+                      />
                     </div>
                     <div className="grid gap-2">
-                      <Label htmlFor="req-message">Por que você precisa de acesso?</Label>
-                      <Textarea 
-                        id="req-message" 
-                        placeholder="Conte-nos brevemente sobre seu negócio..." 
-                        className="resize-none"
-                        required
+                      <Label htmlFor="signup-password">Senha</Label>
+                      <Input 
+                        id="signup-password" 
+                        type="password" 
+                        placeholder="Mínimo 6 caracteres" 
+                        required 
+                        minLength={6}
+                        value={signUpPassword}
+                        onChange={(e) => setSignUpPassword(e.target.value)}
                       />
                     </div>
                   </div>
                   <DialogFooter>
-                    <Button type="submit" className="w-full gap-2" disabled={requestLoading}>
-                      {requestLoading ? "Enviando..." : (
+                    <Button type="submit" className="w-full gap-2" disabled={signUpLoading}>
+                      {signUpLoading ? "Criando conta..." : (
                         <>
-                          Enviar Solicitação
-                          <Send className="h-4 w-4" />
+                          Criar Conta
+                          <UserPlus className="h-4 w-4" />
                         </>
                       )}
                     </Button>
