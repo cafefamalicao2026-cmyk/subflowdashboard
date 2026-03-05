@@ -9,12 +9,25 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
-import { LogIn } from "lucide-react";
+import { LogIn, Send } from "lucide-react";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [requestLoading, setRequestLoading] = useState(false);
+  const [requestOpen, setRequestOpen] = useState(false);
+  
   const router = useRouter();
   const { toast } = useToast();
 
@@ -35,8 +48,23 @@ export default function LoginPage() {
     }
   };
 
+  const handleRequestAccess = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setRequestLoading(true);
+    
+    // Simulação de envio de solicitação
+    setTimeout(() => {
+      setRequestLoading(false);
+      setRequestOpen(false);
+      toast({
+        title: "Solicitação enviada!",
+        description: "Nossa equipe analisará seu pedido e entrará em contato em breve.",
+      });
+    }, 1500);
+  };
+
   return (
-    <div className="flex min-h-screen items-center justify-center p-4 bg-background">
+    <div className="flex min-h-screen items-center justify-center p-4 bg-background text-foreground">
       <Card className="w-full max-w-md shadow-lg border-none">
         <CardHeader className="space-y-1">
           <div className="flex justify-center mb-4">
@@ -78,8 +106,55 @@ export default function LoginPage() {
               {loading ? "Entrando..." : "Entrar"}
             </Button>
           </form>
+
           <div className="mt-6 text-center text-sm text-muted-foreground">
-            Ainda não tem uma conta? <span className="text-primary font-medium cursor-pointer hover:underline">Solicite acesso</span>
+            Ainda não tem uma conta?{" "}
+            <Dialog open={requestOpen} onOpenChange={setRequestOpen}>
+              <DialogTrigger asChild>
+                <span className="text-primary font-medium cursor-pointer hover:underline transition-all">
+                  Solicite acesso
+                </span>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-[425px]">
+                <form onSubmit={handleRequestAccess}>
+                  <DialogHeader>
+                    <DialogTitle>Solicitar Acesso</DialogTitle>
+                    <DialogDescription>
+                      Preencha os dados abaixo e entraremos em contato para validar seu perfil Pro.
+                    </DialogDescription>
+                  </DialogHeader>
+                  <div className="grid gap-4 py-4">
+                    <div className="grid gap-2">
+                      <Label htmlFor="req-name">Nome Completo</Label>
+                      <Input id="req-name" placeholder="Seu nome" required />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="req-email">E-mail Corporativo</Label>
+                      <Input id="req-email" type="email" placeholder="nome@empresa.com" required />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="req-message">Por que você precisa de acesso?</Label>
+                      <Textarea 
+                        id="req-message" 
+                        placeholder="Conte-nos brevemente sobre seu negócio..." 
+                        className="resize-none"
+                        required
+                      />
+                    </div>
+                  </div>
+                  <DialogFooter>
+                    <Button type="submit" className="w-full gap-2" disabled={requestLoading}>
+                      {requestLoading ? "Enviando..." : (
+                        <>
+                          Enviar Solicitação
+                          <Send className="h-4 w-4" />
+                        </>
+                      )}
+                    </Button>
+                  </DialogFooter>
+                </form>
+              </DialogContent>
+            </Dialog>
           </div>
         </CardContent>
       </Card>
