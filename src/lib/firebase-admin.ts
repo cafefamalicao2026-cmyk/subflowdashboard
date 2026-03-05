@@ -1,7 +1,15 @@
-var admin = require("firebase-admin");
+import * as admin from 'firebase-admin';
 
-var serviceAccount = require("path/to/serviceAccountKey.json");
+if (!admin.apps.length) {
+  try {
+    admin.initializeApp({
+      credential: admin.credential.applicationDefault(),
+    });
+  } catch (error) {
+    // Fallback para quando não houver credenciais padrão (ambiente local sem Service Account configurada)
+    admin.initializeApp();
+  }
+}
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
+export const adminDb = admin.firestore();
+export { admin };

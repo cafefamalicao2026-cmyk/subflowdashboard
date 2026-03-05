@@ -1,21 +1,34 @@
 import { stripe } from "@/lib/stripe";
 import { NextResponse } from "next/server";
 
-export async function POST() {
-  const session = await stripe.checkout.sessions.create({
-    payment_method_types: ["card"],
-    mode: "subscription",
+export async function POST(req: Request) {
+  try {
+    const { uid, email, priceId } = await req.json();
 
-    line_items: [
-      {
-        price: "SEU_PRICE_ID",
-        quantity: 1,
+    if (!uid || !email || !priceId) {
+      return new NextResponse("Missing parameters", { status: 400 });
+    }
+
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ["card"],
+      mode: "subscription",
+      customer_email: email,
+      line_items: [
+        {
+          price: priceId,
+          quantity: 1,
+        },
+      ],
+      metadata: {
+        firebaseUID: uid,
       },
-    ],
+      success_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard?success=true`,
+      cancel_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard?canceled=true`,
+    });
 
-    success_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`,
-    cancel_url: `${process.env.NEXT_PUBLIC_APP_URL}/dashboard`,
-  });
-
-  return NextResponse.json({ url: session.url });
+    return NextResponse.json({ url: session.url });
+  } catch (error: any) {
+    console.error("Stripe Checkout Error:", error);
+    return new NextResponse(error.message || "Internal Server Error", { status: 500 });
+  }
 }

@@ -1,24 +1,35 @@
 "use client";
 
-import React from "react";
-import { useUser, useAuth } from "@/firebase";
+import React, { useState, useEffect } from "react";
+import { useUser, useAuth, useDoc, useMemoFirebase } from "@/firebase";
 import { signOut as firebaseSignOut } from "firebase/auth";
-import { LogOut, User, HelpCircle, Edit3, ChevronRight, CreditCard, AlertCircle } from "lucide-react";
+import { LogOut, User, HelpCircle, Edit3, ChevronRight, CreditCard, AlertCircle, Loader2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
 import { useRouter } from "next/navigation";
+import { doc } from "firebase/firestore";
+import { useFirestore } from "@/firebase";
+import { useToast } from "@/hooks/use-toast";
 
 export default function DashboardPage() {
   const { user } = useUser();
   const auth = useAuth();
+  const db = useFirestore();
   const router = useRouter();
+  const { toast } = useToast();
+  const [checkoutLoading, setCheckoutLoading] = useState(false);
+
+  // Monitor subscription status in Firestore
+  const userDocRef = useMemoFirebase(() => user ? doc(db, "users", user.uid) : null, [user, db]);
+  const { data: userData, isLoading: isUserDataLoading } = useDoc(userDocRef);
   
-  // Mock data as requested in requirements
-  const userName = user?.displayName || "Hebert Alves";
-  const userEmail = user?.email || "hebert.alves@subflow.pro";
+  const userName = user?.displayName || userData?.name || "Usuário";
+  const userEmail = user?.email || userData?.email || "";
+  const subscriptionStatus = userData?.subscriptionStatus || "Cancelado";
+  const nextBillingDate = userData?.currentPeriodEnd ? new Date(userData.currentPeriodEnd).toLocaleDateString() : "Indisponível";
 
   const handleSignOut = async () => {
     try {
@@ -26,6 +37,38 @@ export default function DashboardPage() {
       router.push("/login");
     } catch (error) {
       console.error("Error signing out:", error);
+    }
+  };
+
+  const handleSubscribe = async () => {
+    if (!user) return;
+    
+    setCheckoutLoading(true);
+    try {
+      const response = await fetch("/api/stripe/checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          uid: user.uid,
+          email: user.email,
+          priceId: process.env.NEXT_PUBLIC_STRIPE_PRICE_MONTHLY || "STRIPE_PRICE_MONTHLY", // Fallback for dev
+        }),
+      });
+
+      const data = await response.json();
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        throw new Error("Failed to create checkout session");
+      }
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Erro no checkout",
+        description: "Não foi possível iniciar o pagamento. Tente novamente.",
+      });
+    } finally {
+      setCheckoutLoading(false);
     }
   };
 
@@ -68,32 +111,53 @@ export default function DashboardPage() {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="p-4 rounded-xl bg-gray-50/50 border border-gray-100">
                     <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">Status Atual</p>
-                    <Badge variant="destructive" className="bg-red-100 text-red-600 hover:bg-red-100 border-none font-semibold px-3 py-1">
-                      Cancelado
+                    <Badge 
+                      variant={subscriptionStatus === "Ativo" ? "default" : "destructive"} 
+                      className={`${subscriptionStatus === "Ativo" ? "bg-green-100 text-green-600" : "bg-red-100 text-red-600"} hover:bg-opacity-80 border-none font-semibold px-3 py-1`}
+                    >
+                      {subscriptionStatus}
                     </Badge>
                   </div>
                   <div className="p-4 rounded-xl bg-gray-50/50 border border-gray-100">
                     <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">Próxima Cobrança</p>
-                    <span className="text-sm font-semibold text-foreground">Indisponível</span>
+                    <span className="text-sm font-semibold text-foreground">{nextBillingDate}</span>
                   </div>
                 </div>
 
                 {/* Activation Banner */}
-                <div className="p-6 rounded-2xl bg-primary/5 border border-primary/10 flex flex-col md:flex-row items-center justify-between gap-6">
-                  <div className="space-y-1 text-center md:text-left">
-                    <h3 className="text-lg font-bold text-primary">Ative seu plano agora</h3>
-                    <p className="text-sm text-primary/70">Tenha acesso ilimitado a todas as funcionalidades pro.</p>
-                  </div>
-                  <div className="flex items-center gap-6">
-                    <div className="text-center md:text-right">
-                      <p className="text-xs font-medium text-primary/60 uppercase">Mensal</p>
-                      <p className="text-2xl font-black text-primary">R$ 49,90</p>
+                {subscriptionStatus !== "Ativo" && (
+                  <div className="p-6 rounded-2xl bg-primary/5 border border-primary/10 flex flex-col md:flex-row items-center justify-between gap-6">
+                    <div className="space-y-1 text-center md:text-left">
+                      <h3 className="text-lg font-bold text-primary">Ative seu plano agora</h3>
+                      <p className="text-sm text-primary/70">Tenha acesso ilimitado a todas as funcionalidades pro.</p>
                     </div>
-                    <Button className="bg-primary hover:bg-primary/90 text-white px-8 py-6 rounded-xl font-bold transition-all shadow-md hover:shadow-lg">
-                      Assinar Plano
-                    </Button>
+                    <div className="flex items-center gap-6">
+                      <div className="text-center md:text-right">
+                        <p className="text-xs font-medium text-primary/60 uppercase">Mensal</p>
+                        <p className="text-2xl font-black text-primary">R$ 49,90</p>
+                      </div>
+                      <Button 
+                        onClick={handleSubscribe}
+                        disabled={checkoutLoading}
+                        className="bg-primary hover:bg-primary/90 text-white px-8 py-6 rounded-xl font-bold transition-all shadow-md hover:shadow-lg min-w-[160px]"
+                      >
+                        {checkoutLoading ? <Loader2 className="animate-spin h-5 w-5" /> : "Assinar Plano"}
+                      </Button>
+                    </div>
                   </div>
-                </div>
+                )}
+                
+                {subscriptionStatus === "Ativo" && (
+                  <div className="p-6 rounded-2xl bg-green-50 border border-green-100 flex items-center gap-4">
+                    <div className="bg-green-100 p-3 rounded-full">
+                      <CreditCard className="h-6 w-6 text-green-600" />
+                    </div>
+                    <div>
+                      <h3 className="text-lg font-bold text-green-800">Sua assinatura está ativa!</h3>
+                      <p className="text-sm text-green-700">Aproveite todos os recursos do SubFlow Pro.</p>
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
 
