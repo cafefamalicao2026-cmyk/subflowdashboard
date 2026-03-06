@@ -30,34 +30,30 @@ export async function POST(req: Request) {
   }
 
   try {
-
     switch (event.type) {
-
       case "checkout.session.completed": {
         const session = event.data.object as Stripe.Checkout.Session;
         const uid = session.metadata?.firebaseUID;
 
         if (!uid) {
-          console.error("UID do Firebase não encontrado no metadata.");
+          console.error("UID do Firebase não encontrado no metadata da sessão.");
           break;
         }
 
         const subscriptionId = session.subscription as string;
         const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-
-        const currentPeriodEnd = (subscription as Stripe.Subscription).current_period_end;
-
-        console.log("Ativando assinatura via Checkout para usuário:", uid);
+        const currentPeriodEnd = (subscription as any).current_period_end;
 
         await adminDb.collection("users").doc(uid).set({
           subscriptionStatus: "Ativo",
-          subscriptionId: subscriptionId,
+          subscriptionId,
           stripeCustomerId: session.customer as string,
           currentPeriodEnd: new Date(currentPeriodEnd * 1000).toISOString(),
           plan: "pro",
           updatedAt: new Date().toISOString(),
         }, { merge: true });
 
+        console.log("Assinatura ativada via checkout:", uid);
         break;
       }
 
@@ -65,50 +61,34 @@ export async function POST(req: Request) {
         const invoice = event.data.object as Stripe.Invoice;
         const subscriptionId = invoice.subscription as string;
 
-        if (!subscriptionId) break;
+        if (!subscriptionId) {
+          console.log("Evento invoice.payment_succeeded ignorado: Nenhuma assinatura vinculada.");
+          break;
+        }
 
-        // Busca o usuário pelo ID da assinatura
+        // Buscar usuário pela assinatura
         const usersSnapshot = await adminDb
           .collection("users")
           .where("subscriptionId", "==", subscriptionId)
           .limit(1)
           .get();
 
-        if (!usersSnapshot.empty) {
-          const userDoc = usersSnapshot.docs[0];
-          const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-          const currentPeriodEnd = (subscription as Stripe.Subscription).current_period_end;
-
-          await userDoc.ref.update({
-            subscriptionStatus: "Ativo",
-            currentPeriodEnd: new Date(currentPeriodEnd * 1000).toISOString(),
-            updatedAt: new Date().toISOString(),
-          });
-
-          console.log("Pagamento confirmado, status Ativo para usuário:", userDoc.id);
+        if (usersSnapshot.empty) {
+          console.warn(`Aviso: Usuário não encontrado para a assinatura ${subscriptionId}`);
+          break;
         }
-        break;
-      }
 
-      case "customer.subscription.deleted": {
-        const subscription = event.data.object as Stripe.Subscription;
+        const userDoc = usersSnapshot.docs[0];
+        const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+        const currentPeriodEnd = (subscription as any).current_period_end;
 
-        const usersSnapshot = await adminDb
-          .collection("users")
-          .where("subscriptionId", "==", subscription.id)
-          .limit(1)
-          .get();
+        await userDoc.ref.update({
+          subscriptionStatus: "Ativo",
+          currentPeriodEnd: new Date(currentPeriodEnd * 1000).toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
 
-        if (!usersSnapshot.empty) {
-          const userDoc = usersSnapshot.docs[0];
-
-          await userDoc.ref.update({
-            subscriptionStatus: "Cancelado",
-            updatedAt: new Date().toISOString(),
-          });
-
-          console.log("Assinatura cancelada:", subscription.id);
-        }
+        console.log(`Pagamento confirmado e status 'Ativo' garantido para usuário: ${userDoc.id}`);
         break;
       }
 
@@ -126,24 +106,40 @@ export async function POST(req: Request) {
 
         if (!usersSnapshot.empty) {
           const userDoc = usersSnapshot.docs[0];
-
           await userDoc.ref.update({
             subscriptionStatus: "Pendente",
             updatedAt: new Date().toISOString(),
           });
+          console.log("Pagamento falhou, status alterado para Pendente:", userDoc.id);
+        }
+        break;
+      }
 
-          console.log("Pagamento falhou para assinatura:", subscriptionId);
+      case "customer.subscription.deleted": {
+        const subscription = event.data.object as Stripe.Subscription;
+        const usersSnapshot = await adminDb
+          .collection("users")
+          .where("subscriptionId", "==", subscription.id)
+          .limit(1)
+          .get();
+
+        if (!usersSnapshot.empty) {
+          const userDoc = usersSnapshot.docs[0];
+          await userDoc.ref.update({
+            subscriptionStatus: "Cancelado",
+            updatedAt: new Date().toISOString(),
+          });
+          console.log("Assinatura cancelada no Stripe, atualizado no Firestore:", subscription.id);
         }
         break;
       }
 
       default:
-        console.log("Evento ignorado:", event.type);
+        console.log("Evento não tratado explicitamente:", event.type);
         break;
     }
 
     return NextResponse.json({ received: true });
-
   } catch (error) {
     console.error("Erro ao processar webhook:", error);
     return new NextResponse("Erro ao processar webhook", { status: 500 });
