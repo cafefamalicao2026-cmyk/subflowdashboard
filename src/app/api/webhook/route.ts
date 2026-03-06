@@ -1,50 +1,65 @@
+export const dynamic = "force-dynamic";
+
 import { stripe } from "@/lib/stripe";
-import { headers } from "next/headers";
 import { NextResponse } from "next/server";
 import { adminDb } from "@/lib/firebase-admin";
+import Stripe from "stripe";
 
 export async function POST(req: Request) {
   const body = await req.text();
-  const signature = headers().get("stripe-signature") as string;
+  const signature = req.headers.get("stripe-signature") as string;
 
-  let event;
-
-  try {
-    event = stripe.webhooks.constructEvent(
-      body,
-      signature,
-      process.env.STRIPE_WEBHOOK_SECRET as string
-    );
-  } catch (err: any) {
-    console.error(`Webhook signature verification failed: ${err.message}`);
-    return new NextResponse(`Webhook Error: ${err.message}`, { status: 400 });
+  if (!signature) {
+    return new NextResponse("Assinatura do Stripe ausente", { status: 400 });
   }
 
-  const session = event.data.object as any;
+  let event: Stripe.Event;
+
+  try {
+    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+    if (!webhookSecret) {
+      throw new Error("STRIPE_WEBHOOK_SECRET não configurada.");
+    }
+
+    event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
+  } catch (err: any) {
+    console.error(`Falha na verificação do Webhook: ${err.message}`);
+    return new NextResponse(`Webhook Error: ${err.message}`, { status: 400 });
+  }
 
   try {
     switch (event.type) {
       case "checkout.session.completed": {
-        const subscription = await stripe.subscriptions.retrieve(session.subscription as string);
-        const uid = session.metadata.firebaseUID;
+        const session = event.data.object as Stripe.Checkout.Session;
+        const uid = session.metadata?.firebaseUID;
 
-        if (uid) {
-          await adminDb.collection("users").doc(uid).set({
-            subscriptionStatus: "Ativo",
-            subscriptionId: subscription.id,
-            stripeCustomerId: session.customer as string,
-            currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString(),
-            plan: "pro",
-            updatedAt: new Date().toISOString(),
-          }, { merge: true });
+        if (!uid) {
+          console.error("Firebase UID não encontrado no metadata da sessão.");
+          break;
         }
+
+        const subscriptionId = session.subscription as string;
+        const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+
+        console.log(`Ativando assinatura via Webhook para usuário: ${uid}`);
+
+        await adminDb.collection("users").doc(uid).set({
+          subscriptionStatus: "Ativo",
+          subscriptionId: subscriptionId,
+          stripeCustomerId: session.customer as string,
+          currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString(),
+          plan: "pro",
+          updatedAt: new Date().toISOString(),
+        }, { merge: true });
+
         break;
       }
 
       case "customer.subscription.deleted": {
-        const subscriptionId = session.id;
+        const subscription = event.data.object as Stripe.Subscription;
+
         const usersSnapshot = await adminDb.collection("users")
-          .where("subscriptionId", "==", subscriptionId)
+          .where("subscriptionId", "==", subscription.id)
           .limit(1)
           .get();
 
@@ -54,34 +69,21 @@ export async function POST(req: Request) {
             subscriptionStatus: "Cancelado",
             updatedAt: new Date().toISOString(),
           });
+          console.log(`Assinatura cancelada para o usuário associado a: ${subscription.id}`);
         }
-        break;
-      }
 
-      case "invoice.payment_failed": {
-        const subscriptionId = session.subscription as string;
-        const usersSnapshot = await adminDb.collection("users")
-          .where("subscriptionId", "==", subscriptionId)
-          .limit(1)
-          .get();
-
-        if (!usersSnapshot.empty) {
-          const userDoc = usersSnapshot.docs[0];
-          await userDoc.ref.update({
-            subscriptionStatus: "Pendente",
-            updatedAt: new Date().toISOString(),
-          });
-        }
         break;
       }
 
       default:
-        console.log(`Unhandled event type ${event.type}`);
+        // Outros eventos que você pode querer ignorar silenciosamente
+        break;
     }
 
     return NextResponse.json({ received: true });
+
   } catch (error: any) {
-    console.error("Webhook processing failed:", error);
-    return new NextResponse("Webhook handler failed", { status: 500 });
+    console.error("Erro ao processar evento do webhook no Firestore:", error);
+    return new NextResponse("Erro ao processar dados do webhook", { status: 500 });
   }
 }
