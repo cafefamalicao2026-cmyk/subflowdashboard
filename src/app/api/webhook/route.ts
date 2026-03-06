@@ -9,25 +9,20 @@ export async function POST(req: Request) {
   const body = await req.text();
   const signature = req.headers.get("stripe-signature");
 
-  if (!signature) {
-    return new NextResponse("Assinatura do Stripe ausente", { status: 400 });
-  }
+  if (!signature) return new NextResponse("Sem assinatura", { status: 400 });
 
   let event: Stripe.Event;
 
   try {
     const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-
-    if (!webhookSecret) {
-      throw new Error("STRIPE_WEBHOOK_SECRET não configurada.");
-    }
-
+    if (!webhookSecret) throw new Error("STRIPE_WEBHOOK_SECRET não configurada.");
     event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
-
   } catch (err: any) {
-    console.error("Erro na verificação do webhook:", err.message);
-    return new NextResponse(`Webhook Error: ${err.message}`, { status: 400 });
+    console.error("Erro no webhook:", err.message);
+    return new NextResponse(`Erro: ${err.message}`, { status: 400 });
   }
+
+  console.log("Evento recebido:", event.type);
 
   try {
     switch (event.type) {
@@ -36,13 +31,13 @@ export async function POST(req: Request) {
         const uid = session.metadata?.firebaseUID;
 
         if (!uid) {
-          console.error("UID do Firebase não encontrado no metadata da sessão.");
+          console.error("UID não encontrado nos metadados da sessão.");
           break;
         }
 
         const subscriptionId = session.subscription as string;
         const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-        const currentPeriodEnd = (subscription as any).current_period_end;
+        const currentPeriodEnd = subscription.current_period_end;
 
         await adminDb.collection("users").doc(uid).set({
           subscriptionStatus: "Ativo",
@@ -53,7 +48,7 @@ export async function POST(req: Request) {
           updatedAt: new Date().toISOString(),
         }, { merge: true });
 
-        console.log("Assinatura ativada via checkout:", uid);
+        console.log("Usuário ativado via checkout:", uid);
         break;
       }
 
@@ -61,56 +56,37 @@ export async function POST(req: Request) {
         const invoice = event.data.object as Stripe.Invoice;
         const subscriptionId = invoice.subscription as string;
 
-        if (!subscriptionId) {
-          console.log("Evento invoice.payment_succeeded ignorado: Nenhuma assinatura vinculada.");
-          break;
-        }
-
-        // Buscar usuário pela assinatura
-        const usersSnapshot = await adminDb
-          .collection("users")
-          .where("subscriptionId", "==", subscriptionId)
-          .limit(1)
-          .get();
-
-        if (usersSnapshot.empty) {
-          console.warn(`Aviso: Usuário não encontrado para a assinatura ${subscriptionId}`);
-          break;
-        }
-
-        const userDoc = usersSnapshot.docs[0];
-        const subscription = await stripe.subscriptions.retrieve(subscriptionId);
-        const currentPeriodEnd = (subscription as any).current_period_end;
-
-        await userDoc.ref.update({
-          subscriptionStatus: "Ativo",
-          currentPeriodEnd: new Date(currentPeriodEnd * 1000).toISOString(),
-          updatedAt: new Date().toISOString(),
-        });
-
-        console.log(`Pagamento confirmado e status 'Ativo' garantido para usuário: ${userDoc.id}`);
-        break;
-      }
-
-      case "invoice.payment_failed": {
-        const invoice = event.data.object as Stripe.Invoice;
-        const subscriptionId = invoice.subscription as string;
-
         if (!subscriptionId) break;
 
-        const usersSnapshot = await adminDb
+        // Tenta encontrar o usuário pelo subscriptionId
+        let usersSnapshot = await adminDb
           .collection("users")
           .where("subscriptionId", "==", subscriptionId)
           .limit(1)
           .get();
+
+        // Se não encontrar, tenta buscar pelo e-mail do cliente como fallback
+        if (usersSnapshot.empty && invoice.customer_email) {
+          usersSnapshot = await adminDb
+            .collection("users")
+            .where("email", "==", invoice.customer_email)
+            .limit(1)
+            .get();
+        }
 
         if (!usersSnapshot.empty) {
           const userDoc = usersSnapshot.docs[0];
+          const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+          
           await userDoc.ref.update({
-            subscriptionStatus: "Pendente",
+            subscriptionStatus: "Ativo",
+            subscriptionId: subscriptionId, // Garante que o ID está gravado
+            currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString(),
             updatedAt: new Date().toISOString(),
           });
-          console.log("Pagamento falhou, status alterado para Pendente:", userDoc.id);
+          console.log("Pagamento confirmado para usuário:", userDoc.id);
+        } else {
+          console.warn("Usuário não encontrado para a fatura:", subscriptionId);
         }
         break;
       }
@@ -124,24 +100,19 @@ export async function POST(req: Request) {
           .get();
 
         if (!usersSnapshot.empty) {
-          const userDoc = usersSnapshot.docs[0];
-          await userDoc.ref.update({
+          await usersSnapshot.docs[0].ref.update({
             subscriptionStatus: "Cancelado",
             updatedAt: new Date().toISOString(),
           });
-          console.log("Assinatura cancelada no Stripe, atualizado no Firestore:", subscription.id);
+          console.log("Assinatura cancelada no DB:", subscription.id);
         }
         break;
       }
-
-      default:
-        console.log("Evento não tratado explicitamente:", event.type);
-        break;
     }
 
     return NextResponse.json({ received: true });
   } catch (error) {
-    console.error("Erro ao processar webhook:", error);
-    return new NextResponse("Erro ao processar webhook", { status: 500 });
+    console.error("Erro ao processar dados do webhook:", error);
+    return new NextResponse("Erro interno", { status: 500 });
   }
 }
