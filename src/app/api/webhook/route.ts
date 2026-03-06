@@ -39,7 +39,8 @@ export async function POST(req: Request) {
         }
 
         const subscriptionId = session.subscription as string;
-        const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+        // Forçamos a tipagem para Stripe.Subscription para evitar erros de interseção com Stripe.Response
+        const subscription = await stripe.subscriptions.retrieve(subscriptionId) as Stripe.Subscription;
 
         console.log(`Ativando assinatura via Webhook para usuário: ${uid}`);
 
@@ -75,8 +76,30 @@ export async function POST(req: Request) {
         break;
       }
 
+      case "invoice.payment_failed": {
+        const invoice = event.data.object as Stripe.Invoice;
+        const subscriptionId = invoice.subscription as string;
+
+        if (subscriptionId) {
+          const usersSnapshot = await adminDb.collection("users")
+            .where("subscriptionId", "==", subscriptionId)
+            .limit(1)
+            .get();
+
+          if (!usersSnapshot.empty) {
+            const userDoc = usersSnapshot.docs[0];
+            await userDoc.ref.update({
+              subscriptionStatus: "Pendente",
+              updatedAt: new Date().toISOString(),
+            });
+            console.log(`Pagamento falhou para a assinatura: ${subscriptionId}`);
+          }
+        }
+        break;
+      }
+
       default:
-        // Outros eventos que você pode querer ignorar silenciosamente
+        // Outros eventos ignorados
         break;
     }
 
