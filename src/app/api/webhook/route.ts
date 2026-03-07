@@ -36,8 +36,8 @@ export async function POST(req: Request) {
         }
 
         const subscriptionId = session.subscription as string;
-        // Cast explícito para evitar erro de tipagem no current_period_end
-        const subscription = (await stripe.subscriptions.retrieve(subscriptionId)) as Stripe.Subscription;
+        // Recupera a assinatura e usa cast para any para evitar erros de tipagem estrita com current_period_end
+        const subscription = await stripe.subscriptions.retrieve(subscriptionId) as any;
         const currentPeriodEnd = subscription.current_period_end;
 
         await adminDb.collection("users").doc(uid).set({
@@ -54,10 +54,13 @@ export async function POST(req: Request) {
       }
 
       case "invoice.payment_succeeded": {
-        const invoice = event.data.object as Stripe.Invoice;
+        const invoice = event.data.object as any; // Cast para any para acessar .subscription com segurança
         const subscriptionId = invoice.subscription as string;
 
-        if (!subscriptionId) break;
+        if (!subscriptionId) {
+          console.log("Fatura sem assinatura associada.");
+          break;
+        }
 
         // Tenta encontrar o usuário pelo subscriptionId
         let usersSnapshot = await adminDb
@@ -77,12 +80,12 @@ export async function POST(req: Request) {
 
         if (!usersSnapshot.empty) {
           const userDoc = usersSnapshot.docs[0];
-          // Cast explícito para evitar erro de tipagem no current_period_end
-          const subscription = (await stripe.subscriptions.retrieve(subscriptionId)) as Stripe.Subscription;
+          // Recupera a assinatura e usa cast para any para acessar current_period_end
+          const subscription = await stripe.subscriptions.retrieve(subscriptionId) as any;
           
           await userDoc.ref.update({
             subscriptionStatus: "Ativo",
-            subscriptionId: subscriptionId, // Garante que o ID está gravado
+            subscriptionId: subscriptionId,
             currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString(),
             updatedAt: new Date().toISOString(),
           });
