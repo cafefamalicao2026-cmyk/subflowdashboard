@@ -60,16 +60,22 @@ export async function POST(req: Request) {
           break;
         }
 
+        // De acordo com o payload fornecido, os dados principais estão na raiz da assinatura
+        const subscriptionId = subscription.id;
+        const customerId = subscription.customer;
+        const currentPeriodEnd = subscription.current_period_end;
+
         await adminDb.collection("users").doc(uid).set({
           subscriptionStatus: "Ativo",
-          subscriptionId: subscription.id,
-          stripeCustomerId: subscription.customer as string,
-          currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString(),
+          subscriptionId: subscriptionId,
+          stripeCustomerId: customerId,
+          currentPeriodEnd: new Date(currentPeriodEnd * 1000).toISOString(),
           plan: "pro",
           updatedAt: new Date().toISOString(),
+          lastStripeEvent: event.id, // Armazena o ID do evento para referência
         }, { merge: true });
 
-        console.log("Plano ativado via subscription.created para usuário:", uid);
+        console.log(`Plano ativado via ${event.type} para o usuário: ${uid}`);
         break;
       }
 
