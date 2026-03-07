@@ -36,7 +36,8 @@ export async function POST(req: Request) {
         }
 
         const subscriptionId = session.subscription as string;
-        const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+        // Cast explícito para evitar erro de tipagem no current_period_end
+        const subscription = (await stripe.subscriptions.retrieve(subscriptionId)) as Stripe.Subscription;
         const currentPeriodEnd = subscription.current_period_end;
 
         await adminDb.collection("users").doc(uid).set({
@@ -76,7 +77,8 @@ export async function POST(req: Request) {
 
         if (!usersSnapshot.empty) {
           const userDoc = usersSnapshot.docs[0];
-          const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+          // Cast explícito para evitar erro de tipagem no current_period_end
+          const subscription = (await stripe.subscriptions.retrieve(subscriptionId)) as Stripe.Subscription;
           
           await userDoc.ref.update({
             subscriptionStatus: "Ativo",
