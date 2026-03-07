@@ -36,10 +36,11 @@ export async function POST(req: Request) {
         }
 
         const subscriptionId = session.subscription as string;
-        // Recupera a assinatura e usa cast para any para evitar erros de tipagem estrita com current_period_end
+        // Recupera a assinatura para obter a data de expiração (current_period_end)
         const subscription = await stripe.subscriptions.retrieve(subscriptionId) as any;
         const currentPeriodEnd = subscription.current_period_end;
 
+        // Atualiza o documento do usuário no Firestore com status Ativo
         await adminDb.collection("users").doc(uid).set({
           subscriptionStatus: "Ativo",
           subscriptionId,
@@ -49,12 +50,12 @@ export async function POST(req: Request) {
           updatedAt: new Date().toISOString(),
         }, { merge: true });
 
-        console.log("Usuário ativado via checkout:", uid);
+        console.log("Usuário ativado via checkout com sucesso:", uid);
         break;
       }
 
       case "invoice.payment_succeeded": {
-        const invoice = event.data.object as any; // Cast para any para acessar .subscription com segurança
+        const invoice = event.data.object as any;
         const subscriptionId = invoice.subscription as string;
 
         if (!subscriptionId) {
@@ -62,36 +63,25 @@ export async function POST(req: Request) {
           break;
         }
 
-        // Tenta encontrar o usuário pelo subscriptionId
-        let usersSnapshot = await adminDb
+        // Busca o usuário pelo subscriptionId no Firestore
+        const usersSnapshot = await adminDb
           .collection("users")
           .where("subscriptionId", "==", subscriptionId)
           .limit(1)
           .get();
 
-        // Se não encontrar, tenta buscar pelo e-mail do cliente como fallback
-        if (usersSnapshot.empty && invoice.customer_email) {
-          usersSnapshot = await adminDb
-            .collection("users")
-            .where("email", "==", invoice.customer_email)
-            .limit(1)
-            .get();
-        }
-
         if (!usersSnapshot.empty) {
           const userDoc = usersSnapshot.docs[0];
-          // Recupera a assinatura e usa cast para any para acessar current_period_end
           const subscription = await stripe.subscriptions.retrieve(subscriptionId) as any;
           
           await userDoc.ref.update({
             subscriptionStatus: "Ativo",
-            subscriptionId: subscriptionId,
             currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString(),
             updatedAt: new Date().toISOString(),
           });
-          console.log("Pagamento confirmado para usuário:", userDoc.id);
+          console.log("Renovação confirmada para usuário:", userDoc.id);
         } else {
-          console.warn("Usuário não encontrado para a fatura:", subscriptionId);
+          console.warn("Usuário não encontrado para a assinatura:", subscriptionId);
         }
         break;
       }
@@ -109,7 +99,29 @@ export async function POST(req: Request) {
             subscriptionStatus: "Cancelado",
             updatedAt: new Date().toISOString(),
           });
-          console.log("Assinatura cancelada no DB:", subscription.id);
+          console.log("Assinatura cancelada no banco de dados:", subscription.id);
+        }
+        break;
+      }
+
+      case "invoice.payment_failed": {
+        const invoice = event.data.object as any;
+        const subscriptionId = invoice.subscription as string;
+
+        if (subscriptionId) {
+          const usersSnapshot = await adminDb
+            .collection("users")
+            .where("subscriptionId", "==", subscriptionId)
+            .limit(1)
+            .get();
+
+          if (!usersSnapshot.empty) {
+            await usersSnapshot.docs[0].ref.update({
+              subscriptionStatus: "Pendente",
+              updatedAt: new Date().toISOString(),
+            });
+            console.log("Pagamento falhou, status alterado para Pendente:", subscriptionId);
+          }
         }
         break;
       }
@@ -118,6 +130,6 @@ export async function POST(req: Request) {
     return NextResponse.json({ received: true });
   } catch (error) {
     console.error("Erro ao processar dados do webhook:", error);
-    return new NextResponse("Erro interno", { status: 500 });
+    return new NextResponse("Erro interno ao processar o webhook", { status: 500 });
   }
 }
