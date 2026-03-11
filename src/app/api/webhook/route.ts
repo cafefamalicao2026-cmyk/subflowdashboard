@@ -18,91 +18,85 @@ export async function POST(req: Request) {
     if (!webhookSecret) throw new Error("STRIPE_WEBHOOK_SECRET não configurada.");
     event = stripe.webhooks.constructEvent(body, signature, webhookSecret);
   } catch (err: any) {
-    console.error("Erro no webhook:", err.message);
+    console.error("Erro na assinatura do webhook:", err.message);
     return new NextResponse(`Erro: ${err.message}`, { status: 400 });
   }
 
-  console.log("Evento recebido:", event.type);
+  console.log("Evento Stripe recebido:", event.type, event.id);
 
   try {
+    // 1. Evitar execução duplicada
+    const eventRef = adminDb.collection("stripeEvents").doc(event.id);
+    const eventDoc = await eventRef.get();
+
+    if (eventDoc.exists) {
+      console.log("Evento já processado anteriormente:", event.id);
+      return NextResponse.json({ received: true, duplicate: true });
+    }
+
+    // Processamento dos eventos
     switch (event.type) {
       case "checkout.session.completed": {
-        const session = event.data.object as any;
-        const uid = session.metadata?.firebaseUID;
-
-        if (!uid) {
-          console.error("UID não encontrado nos metadados da sessão.");
-          break;
-        }
-
-        const subscriptionId = session.subscription as string;
-        const subscription = await stripe.subscriptions.retrieve(subscriptionId) as any;
-        
-        await adminDb.collection("users").doc(uid).set({
-          subscriptionStatus: "Ativo",
-          subscriptionId,
-          stripeCustomerId: session.customer as string,
-          currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString(),
-          plan: "pro",
-          updatedAt: new Date().toISOString(),
-        }, { merge: true });
-
-        console.log("Usuário ativado via checkout com sucesso:", uid);
-        break;
-      }
-
-      case "customer.subscription.created": {
-        const subscription = event.data.object as any;
-        const uid = subscription.metadata?.firebaseUID;
-
-        if (!uid) {
-          console.warn("UID não encontrado no metadata da assinatura (evento created).");
-          break;
-        }
-
-        // De acordo com o payload fornecido, os dados principais estão na raiz da assinatura
-        const subscriptionId = subscription.id;
-        const customerId = subscription.customer;
-        const currentPeriodEnd = subscription.current_period_end;
-
-        await adminDb.collection("users").doc(uid).set({
-          subscriptionStatus: "Ativo",
-          subscriptionId: subscriptionId,
-          stripeCustomerId: customerId,
-          currentPeriodEnd: new Date(currentPeriodEnd * 1000).toISOString(),
-          plan: "pro",
-          updatedAt: new Date().toISOString(),
-          lastStripeEvent: event.id, // Armazena o ID do evento para referência
-        }, { merge: true });
-
-        console.log(`Plano ativado via ${event.type} para o usuário: ${uid}`);
+        // Apenas log conforme solicitado, ativação agora é via invoice.payment_succeeded
+        console.log("Checkout concluído (aguardando confirmação de pagamento):", event.id);
         break;
       }
 
       case "invoice.payment_succeeded": {
         const invoice = event.data.object as any;
-        const subscriptionId = invoice.subscription as string;
+        
+        // Tenta extrair o UID de vários caminhos possíveis nos metadados
+        const uid = 
+          invoice.subscription_details?.metadata?.firebaseUID || 
+          invoice.metadata?.firebaseUID ||
+          invoice.lines?.data?.[0]?.metadata?.firebaseUID;
+
+        const subscriptionId = invoice.subscription;
 
         if (!subscriptionId) break;
 
-        const usersSnapshot = await adminDb
-          .collection("users")
-          .where("subscriptionId", "==", subscriptionId)
-          .limit(1)
-          .get();
+        // Recuperar a assinatura para obter dados atualizados (como current_period_end)
+        const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+        
+        // Se o UID não estiver na fatura, tentamos pegar da assinatura
+        const finalUid = uid || (subscription.metadata as any).firebaseUID;
 
-        if (!usersSnapshot.empty) {
-          const userDoc = usersSnapshot.docs[0];
-          const subscription = await stripe.subscriptions.retrieve(subscriptionId) as any;
-          
-          await userDoc.ref.update({
-            subscriptionStatus: "Ativo",
-            currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString(),
-            updatedAt: new Date().toISOString(),
-          });
-          console.log("Plano atualizado para Ativo após pagamento de fatura:", userDoc.id);
-        } else {
-          console.warn("Usuário não encontrado para subscriptionId na fatura:", subscriptionId);
+        if (!finalUid) {
+          console.warn("UID não encontrado para ativação da fatura:", subscriptionId);
+          break;
+        }
+
+        await adminDb.collection("users").doc(finalUid).set({
+          subscriptionStatus: "Ativo",
+          subscriptionId: subscription.id,
+          stripeCustomerId: invoice.customer as string,
+          currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString(),
+          plan: "pro",
+          updatedAt: new Date().toISOString(),
+        }, { merge: true });
+
+        console.log("Assinatura ativada/renovada com sucesso:", finalUid);
+        break;
+      }
+
+      case "invoice.payment_failed": {
+        const invoice = event.data.object as any;
+        const subscriptionId = invoice.subscription;
+
+        if (subscriptionId) {
+          const usersSnapshot = await adminDb
+            .collection("users")
+            .where("subscriptionId", "==", subscriptionId)
+            .limit(1)
+            .get();
+
+          if (!usersSnapshot.empty) {
+            await usersSnapshot.docs[0].ref.update({
+              subscriptionStatus: "Pendente",
+              updatedAt: new Date().toISOString(),
+            });
+            console.log("Pagamento falhou, status alterado para Pendente:", subscriptionId);
+          }
         }
         break;
       }
@@ -125,14 +119,13 @@ export async function POST(req: Request) {
         break;
       }
 
-      case "invoice.payment_failed": {
-        const invoice = event.data.object as any;
-        const subscriptionId = invoice.subscription as string;
-
-        if (subscriptionId) {
+      case "customer.subscription.updated": {
+        const subscription = event.data.object as any;
+        
+        if (subscription.status === "past_due") {
           const usersSnapshot = await adminDb
             .collection("users")
-            .where("subscriptionId", "==", subscriptionId)
+            .where("subscriptionId", "==", subscription.id)
             .limit(1)
             .get();
 
@@ -141,15 +134,21 @@ export async function POST(req: Request) {
               subscriptionStatus: "Pendente",
               updatedAt: new Date().toISOString(),
             });
-            console.log("Pagamento falhou, status alterado para Pendente:", subscriptionId);
+            console.log("Assinatura em atraso (past_due), status alterado para Pendente:", subscription.id);
           }
         }
         break;
       }
     }
 
+    // 2. Salvar evento como processado
+    await eventRef.set({
+      createdAt: new Date().toISOString(),
+      eventType: event.type,
+    });
+
     return NextResponse.json({ received: true });
-  } catch (error) {
+  } catch (error: any) {
     console.error("Erro ao processar dados do webhook:", error);
     return new NextResponse("Erro interno ao processar o webhook", { status: 500 });
   }
