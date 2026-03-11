@@ -42,7 +42,7 @@ export async function POST(req: Request) {
         break;
       }
 
-      case "invoice.payment_succeeded": {
+      case "invoice.paid": {
         const invoice = event.data.object as any;
         
         // Tenta extrair o UID de vários caminhos possíveis nos metadados
@@ -56,7 +56,7 @@ export async function POST(req: Request) {
         if (!subscriptionId) break;
 
         // Recuperar a assinatura para obter dados atualizados (como current_period_end)
-        const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+        const subscription = await stripe.subscriptions.retrieve(subscriptionId) as any;
         
         // Se o UID não estiver na fatura, tentamos pegar da assinatura
         const finalUid = uid || (subscription.metadata as any).firebaseUID;
