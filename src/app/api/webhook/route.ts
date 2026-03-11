@@ -43,39 +43,43 @@ export async function POST(req: Request) {
       }
 
       case "invoice.paid": {
+
         const invoice = event.data.object as any;
-        
-        // Tenta extrair o UID de vários caminhos possíveis nos metadados
-        const uid = 
-          invoice.subscription_details?.metadata?.firebaseUID || 
-          invoice.metadata?.firebaseUID ||
-          invoice.lines?.data?.[0]?.metadata?.firebaseUID;
-
-        const subscriptionId = invoice.subscription;
-
-        if (!subscriptionId) break;
-
-        // Recuperar a assinatura para obter dados atualizados (como current_period_end)
-        const subscription = await stripe.subscriptions.retrieve(subscriptionId) as any;
-        
-        // Se o UID não estiver na fatura, tentamos pegar da assinatura
-        const finalUid = uid || (subscription.metadata as any).firebaseUID;
-
-        if (!finalUid) {
-          console.warn("UID não encontrado para ativação da fatura:", subscriptionId);
+      
+        const uid =
+          invoice.parent?.subscription_details?.metadata?.firebaseUID ||
+          invoice.lines?.data?.[0]?.metadata?.firebaseUID ||
+          invoice.metadata?.firebaseUID;
+      
+        const subscriptionId =
+          invoice.parent?.subscription_details?.subscription ||
+          invoice.subscription;
+      
+        if (!subscriptionId) {
+          console.warn("Subscription ID não encontrado");
           break;
         }
-
+      
+        const subscription = await stripe.subscriptions.retrieve(subscriptionId) as any;
+      
+        const finalUid = uid || subscription.metadata?.firebaseUID;
+      
+        if (!finalUid) {
+          console.warn("UID não encontrado para invoice:", invoice.id);
+          break;
+        }
+      
         await adminDb.collection("users").doc(finalUid).set({
           subscriptionStatus: "Ativo",
           subscriptionId: subscription.id,
-          stripeCustomerId: invoice.customer as string,
+          stripeCustomerId: invoice.customer,
           currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString(),
           plan: "pro",
           updatedAt: new Date().toISOString(),
         }, { merge: true });
-
-        console.log("Assinatura ativada/renovada com sucesso:", finalUid);
+      
+        console.log("Assinatura ativada/renovada:", finalUid);
+      
         break;
       }
 
