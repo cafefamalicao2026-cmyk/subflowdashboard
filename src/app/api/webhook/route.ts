@@ -54,7 +54,7 @@ export async function POST(req: Request) {
         break;
       }
 
-      case "invoice.payment_succeeded": {
+      case "invoice.paid": {
         const invoice = event.data.object as any;
         const subscriptionId = invoice.subscription;
         
@@ -74,7 +74,7 @@ export async function POST(req: Request) {
             accessType: "subscription",
             updatedAt: new Date().toISOString(),
           }, { merge: true });
-          console.log("Assinatura ativada/paga via invoice.payment_succeeded:", uid);
+          console.log("Assinatura ativada/paga via invoice.paid:", uid);
         }
         break;
       }
