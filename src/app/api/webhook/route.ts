@@ -65,33 +65,45 @@ export async function POST(req: Request) {
       }
 
       case "customer.subscription.updated": {
+
         const subscription = event.data.object as any;
-        
-        const usersSnapshot = await adminDb
-          .collection("users")
-          .where("subscriptionId", "==", subscription.id)
-          .limit(1)
-          .get();
-
-        if (!usersSnapshot.empty) {
-          let subscriptionStatus = "Ativo";
-          
-          if (subscription.cancel_at_period_end) {
-            subscriptionStatus = "Cancelando";
-          } else if (subscription.status === "past_due") {
-            subscriptionStatus = "Pendente";
-          } else if (subscription.status === "unpaid") {
-            subscriptionStatus = "Inadimplente";
-          }
-
-          await usersSnapshot.docs[0].ref.update({
-            subscriptionStatus,
-            cancelAtPeriodEnd: subscription.cancel_at_period_end,
-            currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString(),
-            updatedAt: new Date().toISOString(),
-          });
-          console.log(`Assinatura ${subscription.id} atualizada para status: ${subscriptionStatus}`);
+      
+        const uid = subscription.metadata?.firebaseUID;
+      
+        if (!uid) {
+          console.warn("UID não encontrado no metadata da subscription");
+          break;
         }
+      
+        const userRef = adminDb.collection("users").doc(uid);
+      
+        let status = "Ativo";
+      
+        if (subscription.cancel_at_period_end) {
+          status = "Cancelando";
+        }
+      
+        if (subscription.status === "past_due") {
+          status = "Pendente";
+        }
+      
+        if (subscription.status === "unpaid") {
+          status = "Inadimplente";
+        }
+      
+        const currentPeriodEnd = new Date(
+          subscription.items.data[0].current_period_end * 1000
+        ).toISOString();
+      
+        await userRef.set({
+          subscriptionStatus: status,
+          cancelAtPeriodEnd: subscription.cancel_at_period_end,
+          currentPeriodEnd,
+          updatedAt: new Date().toISOString(),
+        }, { merge: true });
+      
+        console.log("Subscription atualizada:", uid, status);
+      
         break;
       }
 
