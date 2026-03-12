@@ -27,7 +27,7 @@ export async function POST(req: Request) {
     // Cancela a assinatura ao final do período atual
     const subscription = await stripe.subscriptions.update(subscriptionId, {
       cancel_at_period_end: true,
-    });
+    }) as any;
 
     const currentPeriodEnd = new Date(subscription.current_period_end * 1000).toISOString();
 
