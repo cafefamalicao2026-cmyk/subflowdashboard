@@ -3,7 +3,7 @@
 import React, { useState } from "react";
 import { useUser, useAuth, useDoc, useMemoFirebase } from "@/firebase";
 import { signOut as firebaseSignOut } from "firebase/auth";
-import { LogOut, User, HelpCircle, Edit3, ChevronRight, CreditCard, AlertCircle, Loader2, Info } from "lucide-react";
+import { LogOut, User, HelpCircle, Edit3, ChevronRight, CreditCard, AlertCircle, Loader2, Info, Calendar } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -32,16 +32,25 @@ export default function DashboardPage() {
   const router = useRouter();
   const { toast } = useToast();
   const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [oneTimeLoading, setOneTimeLoading] = useState(false);
   const [cancelLoading, setCancelLoading] = useState(false);
 
-  // Monitor subscription status in Firestore
   const userDocRef = useMemoFirebase(() => user ? doc(db, "users", user.uid) : null, [user, db]);
   const { data: userData } = useDoc(userDocRef);
   
   const userName = user?.displayName || userData?.name || "Usuário";
   const userEmail = user?.email || userData?.email || "";
+  
+  // Logic for Active Access
   const subscriptionStatus = userData?.subscriptionStatus || "Cancelado";
+  const isOneTime = userData?.accessType === "one_time";
+  const accessUntilDate = userData?.accessUntil ? new Date(userData.accessUntil) : null;
+  const isOneTimeActive = isOneTime && accessUntilDate && accessUntilDate > new Date();
+  
+  const isActive = subscriptionStatus === "Ativo" || subscriptionStatus === "Cancelando" || isOneTimeActive;
+  
   const nextBillingDate = userData?.currentPeriodEnd ? new Date(userData.currentPeriodEnd).toLocaleDateString() : "Indisponível";
+  const accessUntilDisplay = accessUntilDate ? accessUntilDate.toLocaleDateString() : "Indisponível";
   const isCanceling = userData?.cancelAtPeriodEnd === true;
 
   const handleSignOut = async () => {
@@ -55,7 +64,6 @@ export default function DashboardPage() {
 
   const handleSubscribe = async () => {
     if (!user) return;
-    
     setCheckoutLoading(true);
     try {
       const response = await fetch("/api/stripe/checkout", {
@@ -67,30 +75,40 @@ export default function DashboardPage() {
           plan: "monthly",
         }),
       });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(errorText || "Failed to create checkout session");
-      }
-
+      if (!response.ok) throw new Error("Falha ao criar sessão de checkout");
       const data = await response.json();
-      if (data.url) {
-        window.location.href = data.url;
-      }
+      if (data.url) window.location.href = data.url;
     } catch (error: any) {
-      toast({
-        variant: "destructive",
-        title: "Erro no checkout",
-        description: error.message || "Não foi possível iniciar o pagamento.",
-      });
+      toast({ variant: "destructive", title: "Erro", description: error.message });
     } finally {
       setCheckoutLoading(false);
     }
   };
 
+  const handleOneTimePayment = async () => {
+    if (!user) return;
+    setOneTimeLoading(true);
+    try {
+      const response = await fetch("/api/stripe/one-time-checkout", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          uid: user.uid,
+          email: user.email,
+        }),
+      });
+      if (!response.ok) throw new Error("Falha ao criar sessão de pagamento único");
+      const data = await response.json();
+      if (data.url) window.location.href = data.url;
+    } catch (error: any) {
+      toast({ variant: "destructive", title: "Erro", description: error.message });
+    } finally {
+      setOneTimeLoading(false);
+    }
+  };
+
   const handleCancelSubscription = async () => {
     if (!user) return;
-    
     setCancelLoading(true);
     try {
       const response = await fetch("/api/stripe/cancel-subscription", {
@@ -98,22 +116,10 @@ export default function DashboardPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ uid: user.uid }),
       });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(errorText || "Erro ao cancelar assinatura");
-      }
-
-      toast({
-        title: "Cancelamento solicitado",
-        description: "Seu plano continuará ativo até o final do período atual.",
-      });
+      if (!response.ok) throw new Error("Erro ao cancelar assinatura");
+      toast({ title: "Cancelamento solicitado", description: "Seu plano continuará ativo até o final do período atual." });
     } catch (error: any) {
-      toast({
-        variant: "destructive",
-        title: "Erro no cancelamento",
-        description: error.message || "Não foi possível cancelar a assinatura.",
-      });
+      toast({ variant: "destructive", title: "Erro", description: error.message });
     } finally {
       setCancelLoading(false);
     }
@@ -129,7 +135,6 @@ export default function DashboardPage() {
             </div>
             <span className="text-xl font-bold tracking-tight text-foreground">SubFlow Pro</span>
           </div>
-          
           <div className="flex items-center gap-4">
             <span className="text-sm font-medium text-muted-foreground hidden sm:inline">
               Olá, <span className="text-foreground">{userName}</span>
@@ -143,13 +148,12 @@ export default function DashboardPage() {
 
       <main className="max-w-7xl mx-auto px-4 mt-8">
         <div className="grid grid-cols-1 lg:grid-cols-10 gap-6">
-          
           <div className="lg:col-span-7 space-y-6">
             <Card className="border-none shadow-sm overflow-hidden">
               <CardHeader className="pb-2">
                 <CardTitle className="text-lg font-semibold flex items-center gap-2">
                   <CreditCard className="h-5 w-5 text-primary" />
-                  Detalhes da Assinatura
+                  Detalhes do Acesso
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-6">
@@ -157,47 +161,79 @@ export default function DashboardPage() {
                   <div className="p-4 rounded-xl bg-gray-50/50 border border-gray-100">
                     <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">Status Atual</p>
                     <Badge 
-                      variant={subscriptionStatus === "Ativo" || subscriptionStatus === "Cancelando" ? "default" : "destructive"} 
-                      className={`${(subscriptionStatus === "Ativo" || subscriptionStatus === "Cancelando") ? "bg-green-100 text-green-600" : "bg-red-100 text-red-600"} hover:bg-opacity-80 border-none font-semibold px-3 py-1`}
+                      variant={isActive ? "default" : "destructive"} 
+                      className={`${isActive ? "bg-green-100 text-green-600" : "bg-red-100 text-red-600"} hover:bg-opacity-80 border-none font-semibold px-3 py-1`}
                     >
-                      {subscriptionStatus}
+                      {isActive ? "Ativo" : "Expirado"}
                     </Badge>
                   </div>
                   <div className="p-4 rounded-xl bg-gray-50/50 border border-gray-100">
                     <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">
-                      {isCanceling ? "Expira em" : "Próxima Cobrança"}
+                      {isOneTime ? "Válido até" : (isCanceling ? "Expira em" : "Próxima Cobrança")}
                     </p>
-                    <span className="text-sm font-semibold text-foreground">{nextBillingDate}</span>
+                    <span className="text-sm font-semibold text-foreground">
+                      {isOneTime ? accessUntilDisplay : nextBillingDate}
+                    </span>
                   </div>
                 </div>
+
+                {isOneTimeActive && (
+                  <div className="p-4 rounded-xl bg-blue-50 border border-blue-100 flex items-start gap-3">
+                    <Calendar className="h-5 w-5 text-blue-600 shrink-0 mt-0.5" />
+                    <p className="text-sm text-blue-700">
+                      Você possui um <strong>Acesso Único de 30 dias</strong>. Seu acesso expira em <span className="font-bold">{accessUntilDisplay}</span>.
+                    </p>
+                  </div>
+                )}
 
                 {isCanceling && (
                   <div className="p-4 rounded-xl bg-amber-50 border border-amber-100 flex items-start gap-3">
                     <Info className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
                     <p className="text-sm text-amber-700">
-                      Sua assinatura foi marcada para cancelamento. Seu plano continuará ativo até o final do período atual em <span className="font-bold">{nextBillingDate}</span>. Após essa data, o acesso será interrompido.
+                      Sua assinatura será cancelada em <span className="font-bold">{nextBillingDate}</span>. Após essa data, o acesso será interrompido.
                     </p>
                   </div>
                 )}
 
-                {subscriptionStatus === "Cancelado" && (
-                  <div className="p-6 rounded-2xl bg-primary/5 border border-primary/10 flex flex-col md:flex-row items-center justify-between gap-6">
-                    <div className="space-y-1 text-center md:text-left">
-                      <h3 className="text-lg font-bold text-primary">Ative seu plano agora</h3>
-                      <p className="text-sm text-primary/70">Tenha acesso ilimitado a todas as funcionalidades pro.</p>
-                    </div>
-                    <div className="flex items-center gap-6">
-                      <div className="text-center md:text-right">
-                        <p className="text-xs font-medium text-primary/60 uppercase">Mensal</p>
-                        <p className="text-2xl font-black text-primary">R$ 49,90</p>
+                {!isActive && (
+                  <div className="space-y-4">
+                    <div className="p-6 rounded-2xl bg-primary/5 border border-primary/10 flex flex-col md:flex-row items-center justify-between gap-6">
+                      <div className="space-y-1 text-center md:text-left">
+                        <h3 className="text-lg font-bold text-primary">Assinatura Mensal</h3>
+                        <p className="text-sm text-primary/70">Renovação automática, cancele quando quiser.</p>
                       </div>
-                      <Button 
-                        onClick={handleSubscribe}
-                        disabled={checkoutLoading}
-                        className="bg-primary hover:bg-primary/90 text-white px-8 py-6 rounded-xl font-bold transition-all shadow-md hover:shadow-lg min-w-[160px]"
-                      >
-                        {checkoutLoading ? <Loader2 className="animate-spin h-5 w-5" /> : "Assinar Plano"}
-                      </Button>
+                      <div className="flex items-center gap-6">
+                        <div className="text-center md:text-right">
+                          <p className="text-2xl font-black text-primary">R$ 49,90</p>
+                        </div>
+                        <Button 
+                          onClick={handleSubscribe}
+                          disabled={checkoutLoading || oneTimeLoading}
+                          className="bg-primary hover:bg-primary/90 text-white px-8 py-6 rounded-xl font-bold transition-all shadow-md min-w-[160px]"
+                        >
+                          {checkoutLoading ? <Loader2 className="animate-spin h-5 w-5" /> : "Assinar Agora"}
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="p-6 rounded-2xl bg-gray-50 border border-gray-100 flex flex-col md:flex-row items-center justify-between gap-6">
+                      <div className="space-y-1 text-center md:text-left">
+                        <h3 className="text-lg font-bold text-gray-800">Acesso Único (30 Dias)</h3>
+                        <p className="text-sm text-gray-500">Pagamento único sem renovação automática.</p>
+                      </div>
+                      <div className="flex items-center gap-6">
+                        <div className="text-center md:text-right">
+                          <p className="text-2xl font-black text-gray-800">R$ 69,90</p>
+                        </div>
+                        <Button 
+                          variant="outline"
+                          onClick={handleOneTimePayment}
+                          disabled={checkoutLoading || oneTimeLoading}
+                          className="px-8 py-6 rounded-xl font-bold border-gray-200 hover:bg-gray-100 transition-all min-w-[160px]"
+                        >
+                          {oneTimeLoading ? <Loader2 className="animate-spin h-5 w-5" /> : "Comprar Acesso"}
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -209,11 +245,10 @@ export default function DashboardPage() {
                         <CreditCard className="h-6 w-6 text-green-600" />
                       </div>
                       <div>
-                        <h3 className="text-lg font-bold text-green-800">Sua assinatura está ativa!</h3>
-                        <p className="text-sm text-green-700">Aproveite todos os recursos do SubFlow Pro.</p>
+                        <h3 className="text-lg font-bold text-green-800">Assinatura Ativa</h3>
+                        <p className="text-sm text-green-700">Aproveite todos os recursos ilimitados.</p>
                       </div>
                     </div>
-                    
                     <AlertDialog>
                       <AlertDialogTrigger asChild>
                         <Button variant="outline" className="text-muted-foreground hover:text-destructive border-gray-200">
@@ -222,9 +257,9 @@ export default function DashboardPage() {
                       </AlertDialogTrigger>
                       <AlertDialogContent>
                         <AlertDialogHeader>
-                          <AlertDialogTitle>Tem certeza que deseja cancelar?</AlertDialogTitle>
+                          <AlertDialogTitle>Cancelar renovação?</AlertDialogTitle>
                           <AlertDialogDescription>
-                            Sua assinatura permanecerá ativa até {nextBillingDate}. Após essa data, você perderá acesso aos recursos Premium.
+                            Seu acesso continuará ativo até {nextBillingDate}.
                           </AlertDialogDescription>
                         </AlertDialogHeader>
                         <AlertDialogFooter>
@@ -235,7 +270,7 @@ export default function DashboardPage() {
                             disabled={cancelLoading}
                           >
                             {cancelLoading ? <Loader2 className="animate-spin h-4 w-4 mr-2" /> : null}
-                            Confirmar Cancelamento
+                            Confirmar
                           </AlertDialogAction>
                         </AlertDialogFooter>
                       </AlertDialogContent>
@@ -247,26 +282,23 @@ export default function DashboardPage() {
 
             <Card className="border-none shadow-sm">
               <CardHeader>
-                <CardTitle className="text-lg font-semibold">Histórico de Pagamentos</CardTitle>
+                <CardTitle className="text-lg font-semibold">Histórico</CardTitle>
               </CardHeader>
               <CardContent>
                 <div className="min-h-[200px] border-2 border-dashed border-gray-200 rounded-2xl flex flex-col items-center justify-center p-8 bg-gray-50/30">
-                  <div className="bg-white p-4 rounded-full shadow-sm mb-4">
-                    <AlertCircle className="h-8 w-8 text-gray-300" />
-                  </div>
-                  <p className="text-gray-400 font-medium text-center">Nenhum pagamento registrado ainda.</p>
-                  <p className="text-gray-300 text-sm mt-1">Suas faturas aparecerão aqui após a primeira assinatura.</p>
+                  <AlertCircle className="h-8 w-8 text-gray-300 mb-2" />
+                  <p className="text-gray-400 font-medium text-center">Nenhum registro ainda.</p>
                 </div>
               </CardContent>
             </Card>
           </div>
 
           <div className="lg:col-span-3 space-y-6">
-            <Card className="border-none shadow-sm h-full">
-              <CardHeader className="pb-4">
+            <Card className="border-none shadow-sm">
+              <CardHeader>
                 <CardTitle className="text-lg font-semibold flex items-center gap-2">
                   <User className="h-5 w-5 text-primary" />
-                  Configurações
+                  Perfil
                 </CardTitle>
               </CardHeader>
               <CardContent className="space-y-6">
@@ -281,22 +313,14 @@ export default function DashboardPage() {
                     <p className="text-sm text-muted-foreground truncate max-w-[200px]">{userEmail}</p>
                   </div>
                 </div>
-
                 <Separator className="bg-gray-100" />
-
                 <nav className="space-y-1">
-                  <Button variant="ghost" className="w-full justify-between h-12 hover:bg-gray-50 text-muted-foreground hover:text-primary transition-all">
-                    <span className="flex items-center gap-3">
-                      <Edit3 className="h-4 w-4" />
-                      Editar Perfil
-                    </span>
+                  <Button variant="ghost" className="w-full justify-between h-12 hover:bg-gray-50 text-muted-foreground">
+                    <span className="flex items-center gap-3"><Edit3 className="h-4 w-4" /> Editar Perfil</span>
                     <ChevronRight className="h-4 w-4 opacity-50" />
                   </Button>
-                  <Button variant="ghost" className="w-full justify-between h-12 hover:bg-gray-50 text-muted-foreground hover:text-primary transition-all">
-                    <span className="flex items-center gap-3">
-                      <HelpCircle className="h-4 w-4" />
-                      Central de Ajuda
-                    </span>
+                  <Button variant="ghost" className="w-full justify-between h-12 hover:bg-gray-50 text-muted-foreground">
+                    <span className="flex items-center gap-3"><HelpCircle className="h-4 w-4" /> Suporte</span>
                     <ChevronRight className="h-4 w-4 opacity-50" />
                   </Button>
                 </nav>

@@ -25,7 +25,6 @@ export async function POST(req: Request) {
   console.log("Evento Stripe recebido:", event.type, event.id);
 
   try {
-    // 1. Evitar execução duplicada
     const eventRef = adminDb.collection("stripeEvents").doc(event.id);
     const eventDoc = await eventRef.get();
 
@@ -36,11 +35,26 @@ export async function POST(req: Request) {
 
     switch (event.type) {
       case "checkout.session.completed": {
-        console.log("Checkout concluído (log apenas):", event.id);
+        const session = event.data.object as any;
+        const uid = session.metadata?.firebaseUID;
+        const paymentType = session.metadata?.paymentType;
+
+        if (paymentType === "30days" && uid) {
+          const accessUntil = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+          
+          await adminDb.collection("users").doc(uid).set({
+            accessType: "one_time",
+            subscriptionStatus: "Ativo",
+            accessUntil: accessUntil,
+            updatedAt: new Date().toISOString(),
+          }, { merge: true });
+          
+          console.log("Acesso de 30 dias liberado para:", uid);
+        }
         break;
       }
 
-      case "invoice.paid": {
+      case "invoice.payment_succeeded": {
         const invoice = event.data.object as any;
         const subscriptionId = invoice.subscription;
         
@@ -57,58 +71,47 @@ export async function POST(req: Request) {
             cancelAtPeriodEnd: subscription.cancel_at_period_end,
             currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString(),
             plan: "pro",
+            accessType: "subscription",
             updatedAt: new Date().toISOString(),
           }, { merge: true });
-          console.log("Assinatura ativada/paga via invoice.paid:", uid);
+          console.log("Assinatura ativada/paga via invoice.payment_succeeded:", uid);
         }
         break;
       }
 
       case "customer.subscription.updated": {
-
         const subscription = event.data.object as any;
-      
-        const uid = subscription.metadata?.firebaseUID;
-      
-        if (!uid) {
-          console.warn("UID não encontrado no metadata da subscription");
-          break;
+        const subscriptionId = subscription.id;
+
+        const usersSnapshot = await adminDb
+          .collection("users")
+          .where("subscriptionId", "==", subscriptionId)
+          .limit(1)
+          .get();
+
+        if (!usersSnapshot.empty) {
+          const userRef = usersSnapshot.docs[0].ref;
+          let status = "Ativo";
+          
+          if (subscription.cancel_at_period_end) status = "Cancelando";
+          if (subscription.status === "past_due") status = "Pendente";
+          if (subscription.status === "unpaid") status = "Inadimplente";
+
+          const currentPeriodEnd = new Date(subscription.current_period_end * 1000).toISOString();
+
+          await userRef.update({
+            subscriptionStatus: status,
+            cancelAtPeriodEnd: subscription.cancel_at_period_end,
+            currentPeriodEnd,
+            updatedAt: new Date().toISOString(),
+          });
+          console.log("Subscription atualizada:", subscriptionId, status);
         }
-      
-        const userRef = adminDb.collection("users").doc(uid);
-      
-        let status = "Ativo";
-      
-        if (subscription.cancel_at_period_end) {
-          status = "Cancelando";
-        }
-      
-        if (subscription.status === "past_due") {
-          status = "Pendente";
-        }
-      
-        if (subscription.status === "unpaid") {
-          status = "Inadimplente";
-        }
-      
-        const currentPeriodEnd = new Date(
-          subscription.items.data[0].current_period_end * 1000
-        ).toISOString();
-      
-        await userRef.set({
-          subscriptionStatus: status,
-          cancelAtPeriodEnd: subscription.cancel_at_period_end,
-          currentPeriodEnd,
-          updatedAt: new Date().toISOString(),
-        }, { merge: true });
-      
-        console.log("Subscription atualizada:", uid, status);
-      
         break;
       }
 
       case "customer.subscription.deleted": {
-        const subscription = event.data.object as Stripe.Subscription;
+        const subscription = event.data.object as any;
         const usersSnapshot = await adminDb
           .collection("users")
           .where("subscriptionId", "==", subscription.id)
@@ -149,7 +152,6 @@ export async function POST(req: Request) {
       }
     }
 
-    // 2. Salvar evento como processado
     await eventRef.set({
       createdAt: new Date().toISOString(),
       eventType: event.type,
