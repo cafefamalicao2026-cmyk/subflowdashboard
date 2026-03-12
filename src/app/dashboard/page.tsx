@@ -1,18 +1,29 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import { useUser, useAuth, useDoc, useMemoFirebase } from "@/firebase";
 import { signOut as firebaseSignOut } from "firebase/auth";
-import { LogOut, User, HelpCircle, Edit3, ChevronRight, CreditCard, AlertCircle, Loader2 } from "lucide-react";
+import { LogOut, User, HelpCircle, Edit3, ChevronRight, CreditCard, AlertCircle, Loader2, Info } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
 import { useRouter } from "next/navigation";
 import { doc } from "firebase/firestore";
 import { useFirestore } from "@/firebase";
 import { useToast } from "@/hooks/use-toast";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 
 export default function DashboardPage() {
   const { user } = useUser();
@@ -21,15 +32,17 @@ export default function DashboardPage() {
   const router = useRouter();
   const { toast } = useToast();
   const [checkoutLoading, setCheckoutLoading] = useState(false);
+  const [cancelLoading, setCancelLoading] = useState(false);
 
   // Monitor subscription status in Firestore
   const userDocRef = useMemoFirebase(() => user ? doc(db, "users", user.uid) : null, [user, db]);
-  const { data: userData, isLoading: isUserDataLoading } = useDoc(userDocRef);
+  const { data: userData } = useDoc(userDocRef);
   
   const userName = user?.displayName || userData?.name || "Usuário";
   const userEmail = user?.email || userData?.email || "";
   const subscriptionStatus = userData?.subscriptionStatus || "Cancelado";
   const nextBillingDate = userData?.currentPeriodEnd ? new Date(userData.currentPeriodEnd).toLocaleDateString() : "Indisponível";
+  const isCanceling = userData?.cancelAtPeriodEnd === true;
 
   const handleSignOut = async () => {
     try {
@@ -51,7 +64,7 @@ export default function DashboardPage() {
         body: JSON.stringify({
           uid: user.uid,
           email: user.email,
-          plan: "monthly", // Passamos o identificador do plano agora
+          plan: "monthly",
         }),
       });
 
@@ -63,24 +76,51 @@ export default function DashboardPage() {
       const data = await response.json();
       if (data.url) {
         window.location.href = data.url;
-      } else {
-        throw new Error("URL de checkout não retornada");
       }
     } catch (error: any) {
-      console.error("Checkout handle error:", error);
       toast({
         variant: "destructive",
         title: "Erro no checkout",
-        description: error.message || "Não foi possível iniciar o pagamento. Verifique se as chaves do Stripe estão configuradas.",
+        description: error.message || "Não foi possível iniciar o pagamento.",
       });
     } finally {
       setCheckoutLoading(false);
     }
   };
 
+  const handleCancelSubscription = async () => {
+    if (!user) return;
+    
+    setCancelLoading(true);
+    try {
+      const response = await fetch("/api/stripe/cancel-subscription", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uid: user.uid }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(errorText || "Erro ao cancelar assinatura");
+      }
+
+      toast({
+        title: "Cancelamento solicitado",
+        description: "Seu plano continuará ativo até o final do período atual.",
+      });
+    } catch (error: any) {
+      toast({
+        variant: "destructive",
+        title: "Erro no cancelamento",
+        description: error.message || "Não foi possível cancelar a assinatura.",
+      });
+    } finally {
+      setCancelLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen pb-12">
-      {/* Header */}
       <header className="bg-white border-b border-gray-100 sticky top-0 z-10">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -104,7 +144,6 @@ export default function DashboardPage() {
       <main className="max-w-7xl mx-auto px-4 mt-8">
         <div className="grid grid-cols-1 lg:grid-cols-10 gap-6">
           
-          {/* Left Column - Subscription & Activation */}
           <div className="lg:col-span-7 space-y-6">
             <Card className="border-none shadow-sm overflow-hidden">
               <CardHeader className="pb-2">
@@ -118,20 +157,30 @@ export default function DashboardPage() {
                   <div className="p-4 rounded-xl bg-gray-50/50 border border-gray-100">
                     <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">Status Atual</p>
                     <Badge 
-                      variant={subscriptionStatus === "Ativo" ? "default" : "destructive"} 
-                      className={`${subscriptionStatus === "Ativo" ? "bg-green-100 text-green-600" : "bg-red-100 text-red-600"} hover:bg-opacity-80 border-none font-semibold px-3 py-1`}
+                      variant={subscriptionStatus === "Ativo" || subscriptionStatus === "Cancelando" ? "default" : "destructive"} 
+                      className={`${(subscriptionStatus === "Ativo" || subscriptionStatus === "Cancelando") ? "bg-green-100 text-green-600" : "bg-red-100 text-red-600"} hover:bg-opacity-80 border-none font-semibold px-3 py-1`}
                     >
                       {subscriptionStatus}
                     </Badge>
                   </div>
                   <div className="p-4 rounded-xl bg-gray-50/50 border border-gray-100">
-                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">Próxima Cobrança</p>
+                    <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider mb-1">
+                      {isCanceling ? "Expira em" : "Próxima Cobrança"}
+                    </p>
                     <span className="text-sm font-semibold text-foreground">{nextBillingDate}</span>
                   </div>
                 </div>
 
-                {/* Activation Banner */}
-                {subscriptionStatus !== "Ativo" && (
+                {isCanceling && (
+                  <div className="p-4 rounded-xl bg-amber-50 border border-amber-100 flex items-start gap-3">
+                    <Info className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+                    <p className="text-sm text-amber-700">
+                      Sua assinatura foi marcada para cancelamento. Seu plano continuará ativo até o final do período atual em <span className="font-bold">{nextBillingDate}</span>. Após essa data, o acesso será interrompido.
+                    </p>
+                  </div>
+                )}
+
+                {subscriptionStatus === "Cancelado" && (
                   <div className="p-6 rounded-2xl bg-primary/5 border border-primary/10 flex flex-col md:flex-row items-center justify-between gap-6">
                     <div className="space-y-1 text-center md:text-left">
                       <h3 className="text-lg font-bold text-primary">Ative seu plano agora</h3>
@@ -153,21 +202,49 @@ export default function DashboardPage() {
                   </div>
                 )}
                 
-                {subscriptionStatus === "Ativo" && (
-                  <div className="p-6 rounded-2xl bg-green-50 border border-green-100 flex items-center gap-4">
-                    <div className="bg-green-100 p-3 rounded-full">
-                      <CreditCard className="h-6 w-6 text-green-600" />
+                {subscriptionStatus === "Ativo" && !isCanceling && (
+                  <div className="flex flex-col sm:flex-row items-center justify-between p-6 rounded-2xl bg-green-50 border border-green-100 gap-4">
+                    <div className="flex items-center gap-4">
+                      <div className="bg-green-100 p-3 rounded-full">
+                        <CreditCard className="h-6 w-6 text-green-600" />
+                      </div>
+                      <div>
+                        <h3 className="text-lg font-bold text-green-800">Sua assinatura está ativa!</h3>
+                        <p className="text-sm text-green-700">Aproveite todos os recursos do SubFlow Pro.</p>
+                      </div>
                     </div>
-                    <div>
-                      <h3 className="text-lg font-bold text-green-800">Sua assinatura está ativa!</h3>
-                      <p className="text-sm text-green-700">Aproveite todos os recursos do SubFlow Pro.</p>
-                    </div>
+                    
+                    <AlertDialog>
+                      <AlertDialogTrigger asChild>
+                        <Button variant="outline" className="text-muted-foreground hover:text-destructive border-gray-200">
+                          Cancelar Assinatura
+                        </Button>
+                      </AlertDialogTrigger>
+                      <AlertDialogContent>
+                        <AlertDialogHeader>
+                          <AlertDialogTitle>Tem certeza que deseja cancelar?</AlertDialogTitle>
+                          <AlertDialogDescription>
+                            Sua assinatura permanecerá ativa até {nextBillingDate}. Após essa data, você perderá acesso aos recursos Premium.
+                          </AlertDialogDescription>
+                        </AlertDialogHeader>
+                        <AlertDialogFooter>
+                          <AlertDialogCancel>Voltar</AlertDialogCancel>
+                          <AlertDialogAction 
+                            onClick={handleCancelSubscription}
+                            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                            disabled={cancelLoading}
+                          >
+                            {cancelLoading ? <Loader2 className="animate-spin h-4 w-4 mr-2" /> : null}
+                            Confirmar Cancelamento
+                          </AlertDialogAction>
+                        </AlertDialogFooter>
+                      </AlertDialogContent>
+                    </AlertDialog>
                   </div>
                 )}
               </CardContent>
             </Card>
 
-            {/* Bottom Row - Payment History */}
             <Card className="border-none shadow-sm">
               <CardHeader>
                 <CardTitle className="text-lg font-semibold">Histórico de Pagamentos</CardTitle>
@@ -184,7 +261,6 @@ export default function DashboardPage() {
             </Card>
           </div>
 
-          {/* Right Column - User Profile & Settings */}
           <div className="lg:col-span-3 space-y-6">
             <Card className="border-none shadow-sm h-full">
               <CardHeader className="pb-4">
@@ -224,14 +300,6 @@ export default function DashboardPage() {
                     <ChevronRight className="h-4 w-4 opacity-50" />
                   </Button>
                 </nav>
-
-                <div className="pt-4">
-                   <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
-                     <p className="text-xs text-muted-foreground leading-relaxed text-center italic">
-                       "Otimize seu fluxo de trabalho com o SubFlow Pro e foque no que realmente importa."
-                     </p>
-                   </div>
-                </div>
               </CardContent>
             </Card>
           </div>

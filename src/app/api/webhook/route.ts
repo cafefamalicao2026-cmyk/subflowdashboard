@@ -34,52 +34,83 @@ export async function POST(req: Request) {
       return NextResponse.json({ received: true, duplicate: true });
     }
 
-    // Processamento dos eventos
     switch (event.type) {
       case "checkout.session.completed": {
-        // Apenas log conforme solicitado, ativação agora é via invoice.payment_succeeded
-        console.log("Checkout concluído (aguardando confirmação de pagamento):", event.id);
+        console.log("Checkout concluído (log apenas):", event.id);
         break;
       }
 
       case "invoice.paid": {
-
         const invoice = event.data.object as any;
-      
-        const uid =
-          invoice.parent?.subscription_details?.metadata?.firebaseUID ||
-          invoice.lines?.data?.[0]?.metadata?.firebaseUID ||
-          invoice.metadata?.firebaseUID;
-      
-        const subscriptionId =
-          invoice.parent?.subscription_details?.subscription ||
-          invoice.subscription;
-      
-        if (!subscriptionId) {
-          console.warn("Subscription ID não encontrado");
-          break;
+        const subscriptionId = invoice.subscription;
+        
+        if (!subscriptionId) break;
+
+        const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+        const uid = subscription.metadata?.firebaseUID;
+
+        if (uid) {
+          await adminDb.collection("users").doc(uid).set({
+            subscriptionStatus: "Ativo",
+            subscriptionId: subscription.id,
+            stripeCustomerId: invoice.customer,
+            cancelAtPeriodEnd: subscription.cancel_at_period_end,
+            currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString(),
+            plan: "pro",
+            updatedAt: new Date().toISOString(),
+          }, { merge: true });
+          console.log("Assinatura ativada/paga via invoice.paid:", uid);
         }
-      
-        const subscription = await stripe.subscriptions.retrieve(subscriptionId) as any;
-      
-        const finalUid = uid || subscription.metadata?.firebaseUID;
-      
-        if (!finalUid) {
-          console.warn("UID não encontrado para invoice:", invoice.id);
-          break;
+        break;
+      }
+
+      case "customer.subscription.updated": {
+        const subscription = event.data.object as Stripe.Subscription;
+        
+        const usersSnapshot = await adminDb
+          .collection("users")
+          .where("subscriptionId", "==", subscription.id)
+          .limit(1)
+          .get();
+
+        if (!usersSnapshot.empty) {
+          let subscriptionStatus = "Ativo";
+          
+          if (subscription.cancel_at_period_end) {
+            subscriptionStatus = "Cancelando";
+          } else if (subscription.status === "past_due") {
+            subscriptionStatus = "Pendente";
+          } else if (subscription.status === "unpaid") {
+            subscriptionStatus = "Inadimplente";
+          }
+
+          await usersSnapshot.docs[0].ref.update({
+            subscriptionStatus,
+            cancelAtPeriodEnd: subscription.cancel_at_period_end,
+            currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString(),
+            updatedAt: new Date().toISOString(),
+          });
+          console.log(`Assinatura ${subscription.id} atualizada para status: ${subscriptionStatus}`);
         }
-      
-        await adminDb.collection("users").doc(finalUid).set({
-          subscriptionStatus: "Ativo",
-          subscriptionId: subscription.id,
-          stripeCustomerId: invoice.customer,
-          currentPeriodEnd: new Date(subscription.current_period_end * 1000).toISOString(),
-          plan: "pro",
-          updatedAt: new Date().toISOString(),
-        }, { merge: true });
-      
-        console.log("Assinatura ativada/renovada:", finalUid);
-      
+        break;
+      }
+
+      case "customer.subscription.deleted": {
+        const subscription = event.data.object as Stripe.Subscription;
+        const usersSnapshot = await adminDb
+          .collection("users")
+          .where("subscriptionId", "==", subscription.id)
+          .limit(1)
+          .get();
+
+        if (!usersSnapshot.empty) {
+          await usersSnapshot.docs[0].ref.update({
+            subscriptionStatus: "Cancelado",
+            cancelAtPeriodEnd: false,
+            updatedAt: new Date().toISOString(),
+          });
+          console.log("Assinatura cancelada definitivamente:", subscription.id);
+        }
         break;
       }
 
@@ -100,45 +131,6 @@ export async function POST(req: Request) {
               updatedAt: new Date().toISOString(),
             });
             console.log("Pagamento falhou, status alterado para Pendente:", subscriptionId);
-          }
-        }
-        break;
-      }
-
-      case "customer.subscription.deleted": {
-        const subscription = event.data.object as any;
-        const usersSnapshot = await adminDb
-          .collection("users")
-          .where("subscriptionId", "==", subscription.id)
-          .limit(1)
-          .get();
-
-        if (!usersSnapshot.empty) {
-          await usersSnapshot.docs[0].ref.update({
-            subscriptionStatus: "Cancelado",
-            updatedAt: new Date().toISOString(),
-          });
-          console.log("Assinatura cancelada no banco de dados:", subscription.id);
-        }
-        break;
-      }
-
-      case "customer.subscription.updated": {
-        const subscription = event.data.object as any;
-        
-        if (subscription.status === "past_due") {
-          const usersSnapshot = await adminDb
-            .collection("users")
-            .where("subscriptionId", "==", subscription.id)
-            .limit(1)
-            .get();
-
-          if (!usersSnapshot.empty) {
-            await usersSnapshot.docs[0].ref.update({
-              subscriptionStatus: "Pendente",
-              updatedAt: new Date().toISOString(),
-            });
-            console.log("Assinatura em atraso (past_due), status alterado para Pendente:", subscription.id);
           }
         }
         break;
